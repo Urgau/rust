@@ -2022,24 +2022,24 @@ pub struct TargetOptions {
     pub link_self_contained: LinkSelfContainedDefault,
 
     /// Linker arguments that are passed *before* any user-defined libraries.
-    pub pre_link_args: MaybeLazy<LinkArgs>,
+    pub pre_link_args: MaybeLazy<LinkArgs, (LinkerFlavor, &'static [&'static str])>,
     pre_link_args_json: LinkArgsCli,
     /// Linker arguments that are unconditionally passed after any
     /// user-defined but before post-link objects. Standard platform
     /// libraries that should be always be linked to, usually go here.
-    pub late_link_args: MaybeLazy<LinkArgs>,
+    pub late_link_args: MaybeLazy<LinkArgs, (LinkerFlavor, &'static [&'static str])>,
     late_link_args_json: LinkArgsCli,
     /// Linker arguments used in addition to `late_link_args` if at least one
     /// Rust dependency is dynamically linked.
-    pub late_link_args_dynamic: MaybeLazy<LinkArgs>,
+    pub late_link_args_dynamic: MaybeLazy<LinkArgs, (LinkerFlavor, &'static [&'static str])>,
     late_link_args_dynamic_json: LinkArgsCli,
     /// Linker arguments used in addition to `late_link_args` if all Rust
     /// dependencies are statically linked.
-    pub late_link_args_static: MaybeLazy<LinkArgs>,
+    pub late_link_args_static: MaybeLazy<LinkArgs, (LinkerFlavor, &'static [&'static str])>,
     late_link_args_static_json: LinkArgsCli,
     /// Linker arguments that are unconditionally passed *after* any
     /// user-defined libraries.
-    pub post_link_args: MaybeLazy<LinkArgs>,
+    pub post_link_args: MaybeLazy<LinkArgs, (LinkerFlavor, &'static [&'static str])>,
     post_link_args_json: LinkArgsCli,
 
     /// Optional link script applied to `dylib` and `executable` crate types.
@@ -2386,7 +2386,18 @@ fn add_link_args(link_args: &mut LinkArgs, flavor: LinkerFlavor, args: &[&'stati
 }
 
 impl TargetOptions {
-    fn link_args(flavor: LinkerFlavor, args: &[&'static str]) -> LinkArgs {
+    fn link_args(
+        flavor: LinkerFlavor,
+        args: &'static [&'static str],
+    ) -> MaybeLazy<LinkArgs, (LinkerFlavor, &'static [&'static str])> {
+        fn inner((flavor, args): (LinkerFlavor, &[&'static str])) -> LinkArgs {
+            TargetOptions::link_args_base(flavor, args)
+        }
+
+        MaybeLazy::with_state((flavor, args), inner)
+    }
+
+    fn link_args_base(flavor: LinkerFlavor, args: &[&'static str]) -> LinkArgs {
         let mut link_args = LinkArgs::new();
         add_link_args(&mut link_args, flavor, args);
         link_args

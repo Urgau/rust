@@ -12,7 +12,6 @@
 
 use crate::spec::crt_objects;
 use crate::spec::LinkSelfContainedDefault;
-use crate::spec::MaybeLazy;
 use crate::spec::TargetOptions;
 use crate::spec::{base, Cc, LinkerFlavor, Target};
 
@@ -20,9 +19,8 @@ pub fn target() -> Target {
     let mut options = base::wasm::options();
 
     options.os = "wasi".into();
-    options.pre_link_args = MaybeLazy::lazy(|| {
-        TargetOptions::link_args(LinkerFlavor::WasmLld(Cc::Yes), &["--target=wasm32-wasi"])
-    });
+    options.pre_link_args =
+        TargetOptions::link_args(LinkerFlavor::WasmLld(Cc::Yes), &["--target=wasm32-wasi"]);
 
     options.pre_link_objects_self_contained = crt_objects::pre_wasi_self_contained();
     options.post_link_objects_self_contained = crt_objects::post_wasi_self_contained();

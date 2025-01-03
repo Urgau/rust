@@ -823,6 +823,9 @@ lint_unexpected_cfg_name_similar_name_no_value = there is a config with a simila
 lint_unexpected_cfg_name_similar_name_value = there is a config with a similar name and value
 lint_unexpected_cfg_name_with_similar_value = found config with similar value
 
+lint_unexpected_cfg_unit_test_false_help = consider enabling unit testing in `Cargo.toml` with `test = true` for this target
+lint_unexpected_cfg_unit_test_false_note = unit testing is probably unexpected in this crate due to `test = false` in `Cargo.toml`
+
 lint_unexpected_cfg_value = unexpected `cfg` condition value: {$has_value ->
         [true] `{$value}`
         *[false] (none)

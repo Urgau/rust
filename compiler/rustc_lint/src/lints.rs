@@ -2220,6 +2220,9 @@ pub(crate) mod unexpected_cfg_name {
     pub(crate) enum CodeSuggestion {
         #[help(lint_unexpected_cfg_define_features)]
         DefineFeatures,
+        #[note(lint_unexpected_cfg_unit_test_false_note)]
+        #[help(lint_unexpected_cfg_unit_test_false_help)]
+        UnitTestFalse,
         #[suggestion(
             lint_unexpected_cfg_name_similar_name_value,
             applicability = "maybe-incorrect",

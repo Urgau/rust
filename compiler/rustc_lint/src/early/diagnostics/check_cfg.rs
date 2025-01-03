@@ -121,9 +121,12 @@ pub(super) fn unexpected_cfg_name(
     let is_from_cargo = rustc_session::utils::was_invoked_from_cargo();
     let is_from_external_macro = rustc_middle::lint::in_external_macro(sess, name_span);
     let mut is_feature_cfg = name == sym::feature;
+    let is_test_cfg = name == sym::test;
 
     let code_sugg = if is_feature_cfg && is_from_cargo {
         lints::unexpected_cfg_name::CodeSuggestion::DefineFeatures
+    } else if is_test_cfg && is_from_cargo {
+        lints::unexpected_cfg_name::CodeSuggestion::UnitTestFalse
     // Suggest the most probable if we found one
     } else if let Some(best_match) = find_best_match_for_name(&possibilities, name, None) {
         is_feature_cfg |= best_match == sym::feature;
@@ -220,7 +223,7 @@ pub(super) fn unexpected_cfg_name(
     };
 
     let invocation_help = if is_from_cargo {
-        let help = if !is_feature_cfg && !is_from_external_macro {
+        let help = if !is_feature_cfg && !is_test_cfg && !is_from_external_macro {
             Some(cargo_help_sub(sess, &inst))
         } else {
             None

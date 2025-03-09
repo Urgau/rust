@@ -164,6 +164,20 @@ pub fn from_utf8_with_indirections() {
     //~^ WARN calls to `std::str::from_utf8`
     str::from_utf8(INVALID_4);
     //~^ WARN calls to `str::from_utf8`
+
+    let mut a = [99, 108, 130, 105, 112, 112, 121]; // invalid
+    loop {
+        a = [99, 108, 130, 105, 112, 112, 121]; // still invalid, but too complex
+        break;
+    }
+    std::str::from_utf8_mut(&mut a);
+
+    let mut a = [99, 108, 130, 105, 112, 112]; // invalid
+    loop {
+        a = *b"clippy"; // valid
+        break;
+    }
+    std::str::from_utf8_mut(&mut a);
 }
 
 fn main() {}

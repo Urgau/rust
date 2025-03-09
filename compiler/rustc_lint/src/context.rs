@@ -4,8 +4,10 @@
 //! overview of how lints are implemented.
 
 use std::cell::Cell;
+use std::ops::ControlFlow;
 use std::slice;
 
+use rustc_ast::BindingMode;
 use rustc_data_structures::fx::FxIndexMap;
 use rustc_data_structures::sync;
 use rustc_data_structures::unord::UnordMap;
@@ -14,6 +16,8 @@ use rustc_feature::Features;
 use rustc_hir::def::Res;
 use rustc_hir::def_id::{CrateNum, DefId};
 use rustc_hir::definitions::{DefPathData, DisambiguatedDefPathData};
+use rustc_hir::intravisit::Visitor;
+use rustc_hir::{HirId, Pat, PatKind};
 use rustc_middle::bug;
 use rustc_middle::middle::privacy::EffectiveVisibilities;
 use rustc_middle::ty::layout::{LayoutError, LayoutOfHelpers, TyAndLayout};
@@ -890,7 +894,18 @@ impl<'tcx> LateContext<'tcx> {
             }
             && let Some(init) = match parent_node {
                 hir::Node::Expr(expr) => Some(expr),
-                hir::Node::LetStmt(hir::LetStmt { init, .. }) => *init,
+                hir::Node::LetStmt(hir::LetStmt {
+                    init,
+                    // Bindigng is immutable, init cannot be re-assigned
+                    pat: Pat { kind: PatKind::Binding(BindingMode::NONE, ..), .. },
+                    ..
+                }) => *init,
+                hir::Node::LetStmt(hir::LetStmt {
+                    init,
+                    // Bindigng is mutable, init can be re-assigned to, if it is bail-out
+                    pat: Pat { kind: PatKind::Binding(BindingMode::MUT, binding_id, ..), .. },
+                    ..
+                }) if !ReassignBindingFinder::is_binding_reassigned(self, *binding_id) => *init,
                 _ => None,
             }
         {
@@ -935,7 +950,18 @@ impl<'tcx> LateContext<'tcx> {
             }
             && let Some(init) = match parent_node {
                 hir::Node::Expr(expr) => Some(expr),
-                hir::Node::LetStmt(hir::LetStmt { init, .. }) => *init,
+                hir::Node::LetStmt(hir::LetStmt {
+                    init,
+                    // Bindigng is immutable, init cannot be re-assigned
+                    pat: Pat { kind: PatKind::Binding(BindingMode::NONE, ..), .. },
+                    ..
+                }) => *init,
+                hir::Node::LetStmt(hir::LetStmt {
+                    init,
+                    // Bindigng is mutable, init can be re-assigned to, if it is bail-out
+                    pat: Pat { kind: PatKind::Binding(BindingMode::MUT, binding_id, ..), .. },
+                    ..
+                }) if !ReassignBindingFinder::is_binding_reassigned(self, *binding_id) => *init,
                 hir::Node::Item(item) => match item.kind {
                     hir::ItemKind::Const(.., body_id) | hir::ItemKind::Static(.., body_id) => {
                         Some(self.tcx.hir_body(body_id).value)
@@ -978,5 +1004,42 @@ impl<'tcx> LayoutOfHelpers<'tcx> for LateContext<'tcx> {
     #[inline]
     fn handle_layout_err(&self, err: LayoutError<'tcx>, _: Span, _: Ty<'tcx>) -> LayoutError<'tcx> {
         err
+    }
+}
+
+struct ReassignBindingFinder<'a, 'tcx> {
+    cx: &'a LateContext<'tcx>,
+    binding_id: HirId,
+}
+
+impl<'a, 'tcx> ReassignBindingFinder<'a, 'tcx> {
+    fn is_binding_reassigned(cx: &'a LateContext<'tcx>, binding_id: HirId) -> bool {
+        if let Some(enclosing_scope_id) = cx.tcx.hir_get_enclosing_scope(binding_id)
+            && let hir::Node::Block(block) = cx.tcx.hir_node(enclosing_scope_id)
+        {
+            let mut finder = ReassignBindingFinder { cx, binding_id };
+            finder.visit_block(block).is_break()
+        } else {
+            false
+        }
+    }
+}
+
+impl<'tcx> Visitor<'tcx> for ReassignBindingFinder<'_, 'tcx> {
+    type Result = ControlFlow<()>;
+    type NestedFilter = rustc_middle::hir::nested_filter::OnlyBodies;
+
+    fn visit_path(&mut self, path: &hir::Path<'tcx>, hir_id: HirId) -> Self::Result {
+        if let Res::Local(id) = path.res {
+            if self.binding_id == id && self.cx.tcx.hir_is_lhs(hir_id) {
+                return ControlFlow::Break(());
+            }
+        }
+
+        ControlFlow::Continue(())
+    }
+
+    fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+        self.cx.tcx
     }
 }

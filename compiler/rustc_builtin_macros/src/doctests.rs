@@ -10,6 +10,8 @@ use rustc_session::Session;
 use rustc_span::hygiene::AstPass;
 use rustc_span::{DUMMY_SP, Span, sym};
 
+mod parsing;
+
 #[allow(dead_code)]
 struct ExpanderCtxt<'a> {
     ext_cx: ExtCtxt<'a>,
@@ -51,8 +53,39 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
     }
 
     fn visit_item(&mut self, item: &mut ast::Item) {
-        let doc_strs: Vec<_> = item.attrs.iter().map(|a| a.doc_str_and_fragment_kind()).collect();
-        dbg!(&doc_strs);
+        let doc_strs: String =
+            item.attrs.iter().filter_map(|a| a.doc_str()).fold(String::new(), |mut acc, s| {
+                acc.push_str(s.as_str());
+                acc.push('\n');
+                acc
+            });
+
+        struct DocTestsCollector {
+            tests: Vec<String>,
+        }
+
+        impl parsing::DocTestVisitor for DocTestsCollector {
+            fn visit_test(
+                &mut self,
+                test: String,
+                _config: parsing::LangString,
+                _rel_line: parsing::MdRelLine,
+                _code_mappings: Vec<parsing::CodeLineMapping>,
+            ) {
+                self.tests.push(test);
+                dbg!(&_config, &_rel_line, &_code_mappings);
+            }
+        }
+
+        let mut collector = DocTestsCollector { tests: Vec::new() };
+
+        parsing::find_testable_code(
+            dbg!(&doc_strs),
+            &mut collector,
+            parsing::ErrorCodes::Yes, /*, None*/
+        );
+
+        dbg!(&collector.tests);
 
         // We don't want to recurse into anything other than mods, since
         // mods or tests inside of functions will break things

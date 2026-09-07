@@ -251,6 +251,10 @@ fn configure_and_expand(
         krate
     });
 
+    sess.time("expand_doctests", || {
+        rustc_builtin_macros::doctests::expand_doctests(&mut krate, sess, features, resolver)
+    });
+
     sess.time("maybe_building_test_harness", || {
         rustc_builtin_macros::test_harness::inject(&mut krate, sess, features, resolver)
     });

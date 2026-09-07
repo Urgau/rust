@@ -54,6 +54,7 @@ mod view_type;
 pub mod asm;
 pub mod cmdline_attrs;
 pub mod contracts;
+pub mod doctests;
 pub mod proc_macro_harness;
 pub mod standard_library_imports;
 pub mod test_harness;

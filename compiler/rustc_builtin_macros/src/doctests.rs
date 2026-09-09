@@ -141,16 +141,11 @@ fn mk_unit_test(
     cx.current_expansion.id = exp_ctxt.expn_id;
     debug!(?cx.current_expansion.id);
 
-    let _sp = cx.with_def_site_ctxt(parsed_item.span);
+    let sp = cx.with_def_site_ctxt(parsed_item.span);
     let ret_ty_sp = cx.with_def_site_ctxt(fn_.sig.decl.output.span());
     let attr_sp = cx.with_def_site_ctxt(item_span);
-    /*let sp = item_span.with_def_site_ctxt(exp_ctxt.expn_id);
-    let ret_ty_sp = item_span.with_def_site_ctxt(exp_ctxt.expn_id);
-    let attr_sp = item_span.with_def_site_ctxt(exp_ctxt.expn_id);*/
 
-    let sp = DUMMY_SP; //.with_def_site_ctxt(exp_ctxt.expn_id.to_expn_id());
-    let def_site = DUMMY_SP; //.with_def_site_ctxt(exp_ctxt.expn_id.to_expn_id());
-    let test_ident = Ident::new(sym::test, def_site);
+    let test_ident = Ident::new(sym::test, attr_sp);
 
     // creates test::$name
     let test_path = |name| cx.path(ret_ty_sp, vec![test_ident, Ident::from_str_and_span(name, sp)]);
@@ -347,7 +342,7 @@ fn mk_unit_test(
         // Access to libtest under a hygienic name
         test_extern,
         // The generated test case
-        //test_const,
+        test_const,
         // The doctest
         //parsed_item,
     ]

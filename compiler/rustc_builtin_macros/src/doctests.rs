@@ -23,7 +23,6 @@ mod source;
 struct ExpanderCtxt<'a> {
     ext_cx: ExtCtxt<'a>,
     expn_id: LocalExpnId,
-    //def_site: Span,
 }
 
 /// Traverse the crate, collecting all the test functions, eliding any
@@ -43,12 +42,6 @@ pub fn expand_doctests(
         &[sym::test, sym::rustc_attrs, sym::coverage_attribute],
         Some(ast::CRATE_NODE_ID),
     );
-    debug!(?expn_id);
-    //.to_expn_id();
-    let def_site = DUMMY_SP.with_def_site_ctxt(expn_id.to_expn_id());
-    debug!(?def_site);
-
-    //ext_cx.current_expansion.id = expn_id;
 
     let cx = ExpanderCtxt { ext_cx, expn_id };
 
@@ -103,8 +96,8 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
             {
                 let items = mk_unit_test(&mut self.cx, parse_info, item.span);
                 debug!("pre fully_expand_fragment:\n{items:#?}");
-                let _items = AstFragment::Items(items.into());
-                /*let items = self
+                let items = AstFragment::Items(items.into());
+                let items = self
                     .cx
                     .ext_cx
                     .monotonic_expander()
@@ -113,7 +106,7 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
                     .pop()
                     .unwrap();
                 debug!("expanded items:\n{items:#?}");
-                self.expanded_doctests.push(items);*/
+                self.expanded_doctests.push(items);
             }
         }
 
@@ -145,8 +138,8 @@ fn mk_unit_test(
         return vec![];
     };
 
-    //cx.current_expansion.id = exp_ctxt.expn_id;
-    debug!(?exp_ctxt.expn_id);
+    cx.current_expansion.id = exp_ctxt.expn_id;
+    debug!(?cx.current_expansion.id);
 
     let _sp = cx.with_def_site_ctxt(parsed_item.span);
     let ret_ty_sp = cx.with_def_site_ctxt(fn_.sig.decl.output.span());
@@ -345,6 +338,10 @@ fn mk_unit_test(
     debug!("synthetic test extern:\n{}\n", pprust::item_to_string(&test_extern));
     debug!("synthetic test item:\n{}\n", pprust::item_to_string(&test_const));
     debug!("synthetic parsed item:\n{}\n", pprust::item_to_string(&parsed_item));
+
+    // this feels like a hack, but removing it makes the resolver explode as it
+    // uses this id for expension but fails to find already expanded
+    cx.current_expansion.id = LocalExpnId::ZERO;
 
     vec![
         // Access to libtest under a hygienic name

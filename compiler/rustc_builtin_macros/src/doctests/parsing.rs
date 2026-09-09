@@ -5,16 +5,14 @@ use std::iter::Peekable;
 use std::ops::Range;
 use std::str::CharIndices;
 
-use rustc_errors::Diag;
-use rustc_errors::DiagMessage;
+use pulldown_cmark::{
+    self, BrokenLink, CodeBlockKind, CowStr, Event, LinkType, Options, Parser, Tag, TagEnd, html,
+};
+use rustc_errors::{Diag, DiagMessage};
 //use rustc_hir::def_id::LocalDefId;
 //use rustc_middle::ty::TyCtxt;
 use rustc_span::Span;
 use rustc_span::edition::Edition;
-
-use pulldown_cmark::{
-    self, BrokenLink, CodeBlockKind, CowStr, Event, LinkType, Options, Parser, Tag, TagEnd, html,
-};
 
 /// Options for rendering Markdown in the main body of documentation.
 fn main_body_opts() -> Options {

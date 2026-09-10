@@ -10,7 +10,7 @@ use rustc_expand::base::{ExtCtxt, ResolverExpand};
 use rustc_expand::expand::{AstFragment, ExpansionConfig};
 use rustc_feature::Features;
 use rustc_session::Session;
-use rustc_span::hygiene::AstPass;
+use rustc_span::hygiene::{AstPass, Transparency};
 use rustc_span::{DUMMY_SP, Ident, LocalExpnId, RemapPathScopeComponents, Span, Symbol, sym};
 use thin_vec::{ThinVec, thin_vec};
 use tracing::debug;
@@ -97,16 +97,10 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
                 let items = mk_unit_test(&mut self.cx, parse_info, item.span);
                 debug!("pre fully_expand_fragment:\n{items:#?}");
                 let items = AstFragment::Items(items.into());
-                let items = self
-                    .cx
-                    .ext_cx
-                    .monotonic_expander()
-                    .fully_expand_fragment(items)
-                    .make_items()
-                    .pop()
-                    .unwrap();
+                let items =
+                    self.cx.ext_cx.monotonic_expander().fully_expand_fragment(items).make_items();
                 debug!("expanded items:\n{items:#?}");
-                self.expanded_doctests.push(items);
+                self.expanded_doctests.extend(items);
             }
         }
 
@@ -138,12 +132,16 @@ fn mk_unit_test(
         return vec![];
     };
 
-    cx.current_expansion.id = exp_ctxt.expn_id;
+    /*cx.current_expansion.id = exp_ctxt.expn_id;
     debug!(?cx.current_expansion.id);
 
     let sp = cx.with_def_site_ctxt(parsed_item.span);
     let ret_ty_sp = cx.with_def_site_ctxt(fn_.sig.decl.output.span());
-    let attr_sp = cx.with_def_site_ctxt(item_span);
+    let attr_sp = cx.with_def_site_ctxt(item_span);*/
+
+    let sp = item_span.apply_mark(exp_ctxt.expn_id.to_expn_id(), Transparency::Opaque);
+    let ret_ty_sp = item_span.apply_mark(exp_ctxt.expn_id.to_expn_id(), Transparency::Opaque);
+    let attr_sp = item_span.apply_mark(exp_ctxt.expn_id.to_expn_id(), Transparency::Opaque);
 
     let test_ident = Ident::new(sym::test, attr_sp);
 
@@ -170,6 +168,19 @@ fn mk_unit_test(
                 test_ident,
                 Ident::from_str_and_span("TestType", sp),
                 Ident::from_str_and_span(name, sp),
+            ],
+        )
+    };
+
+    // crates ::core::option::Option::None
+    let option_none_path = || {
+        cx.path(
+            sp,
+            vec![
+                Ident::from_str_and_span("core", sp),
+                Ident::from_str_and_span("option", sp),
+                Ident::from_str_and_span("Option", sp),
+                Ident::from_str_and_span("None", sp),
             ],
         )
     };
@@ -272,7 +283,8 @@ fn mk_unit_test(
                                             /*if let Some(msg) = should_ignore_message(&item) {
                                                 cx.expr_some(sp, cx.expr_str(sp, msg))
                                             } else {*/
-                                            cx.expr_none(sp), /*}*/
+                                            //cx.expr_none(sp), /*}*/
+                                            cx.expr_path(option_none_path())
                                         ),
                                         // source_file: <relative_path_of_source_file>
                                         field("source_file", cx.expr_str(sp, location_info.0)),
@@ -336,7 +348,7 @@ fn mk_unit_test(
 
     // this feels like a hack, but removing it makes the resolver explode as it
     // uses this id for expension but fails to find already expanded
-    cx.current_expansion.id = LocalExpnId::ZERO;
+    //cx.current_expansion.id = LocalExpnId::ZERO;
 
     vec![
         // Access to libtest under a hygienic name
@@ -344,7 +356,7 @@ fn mk_unit_test(
         // The generated test case
         test_const,
         // The doctest
-        //parsed_item,
+        parsed_item,
     ]
 }
 

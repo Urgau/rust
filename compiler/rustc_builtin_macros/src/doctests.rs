@@ -125,10 +125,10 @@ fn mk_unit_test(
     parse_info: ParseSourceInfo,
     item_span: Span,
 ) -> Vec<Box<ast::Item>> {
-    let parsed_item = parse_info.parsed_item.unwrap();
+    let mut parsed_item = parse_info.parsed_item.unwrap();
     let cx = &mut exp_ctxt.ext_cx;
 
-    let ast::ItemKind::Fn(fn_) = &parsed_item.kind else {
+    let ast::ItemKind::Fn(ref mut fn_) = parsed_item.kind else {
         return vec![];
     };
 
@@ -138,6 +138,16 @@ fn mk_unit_test(
     let sp = cx.with_def_site_ctxt(parsed_item.span);
     let ret_ty_sp = cx.with_def_site_ctxt(fn_.sig.decl.output.span());
     let attr_sp = cx.with_def_site_ctxt(item_span);*/
+
+    {
+        let expn_id = cx.resolver.expansion_for_ast_pass(
+            item_span,
+            AstPass::TestHarness,
+            &[],
+            Some(ast::CRATE_NODE_ID),
+        );
+        fn_.ident.span = item_span.apply_mark(expn_id.to_expn_id(), Transparency::Opaque);
+    }
 
     let sp = item_span.apply_mark(exp_ctxt.expn_id.to_expn_id(), Transparency::Opaque);
     let ret_ty_sp = item_span.apply_mark(exp_ctxt.expn_id.to_expn_id(), Transparency::Opaque);

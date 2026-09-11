@@ -4,7 +4,7 @@ use std::{iter, mem};
 
 use rustc_ast as ast;
 use rustc_ast::mut_visit::*;
-use rustc_ast::{ModKind, join_path_idents};
+use rustc_ast::{ModKind, NodeId, join_path_idents};
 //use rustc_ast_pretty::pprust;
 use rustc_expand::base::{ExtCtxt, ResolverExpand};
 use rustc_expand::expand::{AstFragment, ExpansionConfig};
@@ -20,10 +20,6 @@ use crate::doctests::source::ParseSourceInfo;
 mod parsing;
 mod source;
 
-struct ExpanderCtxt<'a> {
-    ext_cx: ExtCtxt<'a>,
-}
-
 /// Traverse the crate, collecting all the test functions, eliding any
 /// existing main functions, and synthesizing a main test harness
 pub fn expand_doctests(
@@ -35,14 +31,20 @@ pub fn expand_doctests(
     let econfig = ExpansionConfig::default(sym::test, features);
     let ext_cx = ExtCtxt::new(sess, econfig, resolver, None);
 
-    let cx = ExpanderCtxt { ext_cx };
-
-    DocTestsExpander { cx, expanded_doctests: Vec::new() }.visit_crate(krate);
+    DocTestsExpander {
+        ext_cx,
+        expanded_doctests: Vec::new(),
+        mod_path: Vec::new(),
+        parent_node_id: ast::CRATE_NODE_ID,
+    }
+    .visit_crate(krate);
 }
 
 struct DocTestsExpander<'a> {
-    cx: ExpanderCtxt<'a>,
+    ext_cx: ExtCtxt<'a>,
     expanded_doctests: Vec<Box<ast::Item>>,
+    mod_path: Vec<Ident>,
+    parent_node_id: NodeId,
 }
 
 impl<'a> MutVisitor for DocTestsExpander<'a> {
@@ -90,10 +92,10 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
         for test_source in collector.tests {
             if let Ok(parse_info) = source::parse_source(&test_source, &None, None, item.span, &[])
             {
-                let items = mk_unit_test(&mut self.cx, parse_info, item.span);
+                let items = mk_unit_test(self, parse_info, item.span);
                 let items = AstFragment::Items(items.into());
                 let items =
-                    self.cx.ext_cx.monotonic_expander().fully_expand_fragment(items).make_items();
+                    self.ext_cx.monotonic_expander().fully_expand_fragment(items).make_items();
                 self.expanded_doctests.extend(items);
             }
         }
@@ -102,18 +104,27 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
         // mods or tests inside of functions will break things
         if let ast::ItemKind::Mod(
             _,
-            _,
+            mod_ident,
             ModKind::Loaded(.., ast::ModSpans { inner_span: _span, .. }),
         ) = item.kind
         {
-            let prev_tests = mem::take(&mut self.expanded_doctests);
+            //let prev_tests = mem::take(&mut self.expanded_doctests);
+            let prev_parent_node_id = mem::replace(&mut self.parent_node_id, item.id);
+            self.mod_path.push(mod_ident.clone());
 
             ast::mut_visit::walk_item(self, item);
 
+            self.mod_path.pop();
+            self.parent_node_id = prev_parent_node_id;
+
+            /*
+            TODO: we can't just add the doctests here, we need tell the resolver that we are
+            adding the items here, figure-out how, otherwise all the imports are messed-up
             let mut doctests = mem::replace(&mut self.expanded_doctests, prev_tests);
             if let ast::ItemKind::Mod(_, _, ModKind::Loaded(ref mut items, _, _)) = item.kind {
                 items.extend(doctests.drain(..));
             }
+            */
         } /* else {
         // But in those cases, we emit a lint to warn the user of these missing tests.
         ast::visit::walk_item(&mut InnerItemLinter { sess: self.cx.ext_cx.sess }, item);
@@ -122,12 +133,12 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
 }
 
 fn mk_unit_test(
-    exp_ctxt: &mut ExpanderCtxt<'_>,
+    exp: &mut DocTestsExpander<'_>,
     parse_info: ParseSourceInfo,
     item_span: Span,
 ) -> Vec<Box<ast::Item>> {
     let mut parsed_item = parse_info.parsed_item.unwrap();
-    let cx = &mut exp_ctxt.ext_cx;
+    let cx = &mut exp.ext_cx;
 
     let ast::ItemKind::Fn(ref mut fn_) = parsed_item.kind else {
         return vec![];
@@ -138,7 +149,7 @@ fn mk_unit_test(
             item_span,
             AstPass::TestHarness,
             &[],
-            Some(ast::CRATE_NODE_ID),
+            Some(exp.parent_node_id),
         );
         fn_.ident.span = item_span.apply_mark(expn_id.to_expn_id(), Transparency::Opaque);
     }
@@ -147,7 +158,7 @@ fn mk_unit_test(
         DUMMY_SP,
         AstPass::TestHarness,
         &[sym::test, sym::rustc_attrs, sym::coverage_attribute],
-        Some(ast::CRATE_NODE_ID),
+        Some(exp.parent_node_id),
     );
 
     let sp = item_span.apply_mark(expn_id.to_expn_id(), Transparency::Opaque);
@@ -233,20 +244,15 @@ fn mk_unit_test(
         ],
     );
 
-    let test_path_symbol = Symbol::intern(&item_path(
-        // skip the name of the root module
-        //TODO: &cx.current_expansion.module.mod_path[1..],
-        &[],
-        &fn_.ident,
-    ));
+    let test_path_symbol = Symbol::intern(&item_path(&exp.mod_path, &fn_.ident));
 
     let location_info = get_location_info(cx, item_span);
 
     let mut test_const = cx.item(
         sp,
         thin_vec![
-            // #[cfg(test)]
-            //TODO: cx.attr_nested_word(sym::cfg, sym::test, attr_sp),
+            // #[cfg(doctest)]
+            //TODO: cx.attr_nested_word(sym::cfg, sym::doctest, attr_sp),
             // #[rustc_test_marker = "test_case_sort_key"]
             cx.attr_name_value_str(sym::rustc_test_marker, test_path_symbol, attr_sp),
             // #[doc(hidden)]
@@ -356,10 +362,6 @@ fn mk_unit_test(
     //debug!("synthetic test extern:\n{}\n", pprust::item_to_string(&test_extern));
     //debug!("synthetic test item:\n{}\n", pprust::item_to_string(&test_const));
     //debug!("synthetic parsed item:\n{}\n", pprust::item_to_string(&parsed_item));
-
-    // this feels like a hack, but removing it makes the resolver explode as it
-    // uses this id for expension but fails to find already expanded
-    //cx.current_expansion.id = LocalExpnId::ZERO;
 
     vec![
         // Access to libtest under a hygienic name

@@ -239,9 +239,7 @@ fn generate_test_harness(
         &[sym::test, sym::rustc_attrs, sym::coverage_attribute],
         None,
     );
-    tracing::debug!(?expn_id);
     let def_site = DUMMY_SP.with_def_site_ctxt(expn_id.to_expn_id());
-    tracing::debug!(?def_site);
 
     // Remove the entry points
     let mut cleaner = EntryPointCleaner { sess, depth: 0, def_site };
@@ -291,7 +289,6 @@ fn generate_test_harness(
 /// `test::test_main_static`.
 fn mk_main(cx: &mut TestCtxt<'_>) -> Box<ast::Item> {
     let sp = cx.def_site;
-    tracing::debug!(?sp);
     let ecx = &cx.ext_cx;
     let test_ident = Ident::new(sym::test, sp);
 

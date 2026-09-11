@@ -1,20 +1,20 @@
 // Code that generates a test runner to run all the tests in a crate
 
-use std::iter;
+use std::{iter, mem};
 
 use rustc_ast as ast;
 use rustc_ast::mut_visit::*;
 use rustc_ast::{ModKind, join_path_idents};
-use rustc_ast_pretty::pprust;
+//use rustc_ast_pretty::pprust;
 use rustc_expand::base::{ExtCtxt, ResolverExpand};
 use rustc_expand::expand::{AstFragment, ExpansionConfig};
 use rustc_feature::Features;
 use rustc_session::Session;
 use rustc_span::hygiene::{AstPass, Transparency};
-use rustc_span::{DUMMY_SP, Ident, LocalExpnId, RemapPathScopeComponents, Span, Symbol, sym};
+use rustc_span::{DUMMY_SP, Ident, RemapPathScopeComponents, Span, Symbol, sym};
 use thin_vec::{ThinVec, thin_vec};
-use tracing::debug;
 
+//use tracing::debug;
 use crate::doctests::source::ParseSourceInfo;
 
 mod parsing;
@@ -22,7 +22,6 @@ mod source;
 
 struct ExpanderCtxt<'a> {
     ext_cx: ExtCtxt<'a>,
-    expn_id: LocalExpnId,
 }
 
 /// Traverse the crate, collecting all the test functions, eliding any
@@ -36,14 +35,7 @@ pub fn expand_doctests(
     let econfig = ExpansionConfig::default(sym::test, features);
     let ext_cx = ExtCtxt::new(sess, econfig, resolver, None);
 
-    let expn_id = ext_cx.resolver.expansion_for_ast_pass(
-        DUMMY_SP,
-        AstPass::TestHarness,
-        &[sym::test, sym::rustc_attrs, sym::coverage_attribute],
-        Some(ast::CRATE_NODE_ID),
-    );
-
-    let cx = ExpanderCtxt { ext_cx, expn_id };
+    let cx = ExpanderCtxt { ext_cx };
 
     DocTestsExpander { cx, expanded_doctests: Vec::new() }.visit_crate(krate);
 }
@@ -55,8 +47,12 @@ struct DocTestsExpander<'a> {
 
 impl<'a> MutVisitor for DocTestsExpander<'a> {
     fn visit_crate(&mut self, c: &mut ast::Crate) {
+        let prev_tests = mem::take(&mut self.expanded_doctests);
+
         walk_crate(self, c);
-        c.items.extend(self.expanded_doctests.drain(..));
+
+        let mut doctests = mem::replace(&mut self.expanded_doctests, prev_tests);
+        c.items.extend(doctests.drain(..));
     }
 
     fn visit_item(&mut self, item: &mut ast::Item) {
@@ -95,11 +91,9 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
             if let Ok(parse_info) = source::parse_source(&test_source, &None, None, item.span, &[])
             {
                 let items = mk_unit_test(&mut self.cx, parse_info, item.span);
-                debug!("pre fully_expand_fragment:\n{items:#?}");
                 let items = AstFragment::Items(items.into());
                 let items =
                     self.cx.ext_cx.monotonic_expander().fully_expand_fragment(items).make_items();
-                debug!("expanded items:\n{items:#?}");
                 self.expanded_doctests.extend(items);
             }
         }
@@ -112,7 +106,14 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
             ModKind::Loaded(.., ast::ModSpans { inner_span: _span, .. }),
         ) = item.kind
         {
+            let prev_tests = mem::take(&mut self.expanded_doctests);
+
             ast::mut_visit::walk_item(self, item);
+
+            let mut doctests = mem::replace(&mut self.expanded_doctests, prev_tests);
+            if let ast::ItemKind::Mod(_, _, ModKind::Loaded(ref mut items, _, _)) = item.kind {
+                items.extend(doctests.drain(..));
+            }
         } /* else {
         // But in those cases, we emit a lint to warn the user of these missing tests.
         ast::visit::walk_item(&mut InnerItemLinter { sess: self.cx.ext_cx.sess }, item);
@@ -132,13 +133,6 @@ fn mk_unit_test(
         return vec![];
     };
 
-    /*cx.current_expansion.id = exp_ctxt.expn_id;
-    debug!(?cx.current_expansion.id);
-
-    let sp = cx.with_def_site_ctxt(parsed_item.span);
-    let ret_ty_sp = cx.with_def_site_ctxt(fn_.sig.decl.output.span());
-    let attr_sp = cx.with_def_site_ctxt(item_span);*/
-
     {
         let expn_id = cx.resolver.expansion_for_ast_pass(
             item_span,
@@ -149,9 +143,16 @@ fn mk_unit_test(
         fn_.ident.span = item_span.apply_mark(expn_id.to_expn_id(), Transparency::Opaque);
     }
 
-    let sp = item_span.apply_mark(exp_ctxt.expn_id.to_expn_id(), Transparency::Opaque);
-    let ret_ty_sp = item_span.apply_mark(exp_ctxt.expn_id.to_expn_id(), Transparency::Opaque);
-    let attr_sp = item_span.apply_mark(exp_ctxt.expn_id.to_expn_id(), Transparency::Opaque);
+    let expn_id = cx.resolver.expansion_for_ast_pass(
+        DUMMY_SP,
+        AstPass::TestHarness,
+        &[sym::test, sym::rustc_attrs, sym::coverage_attribute],
+        Some(ast::CRATE_NODE_ID),
+    );
+
+    let sp = item_span.apply_mark(expn_id.to_expn_id(), Transparency::Opaque);
+    let ret_ty_sp = item_span.apply_mark(expn_id.to_expn_id(), Transparency::Opaque);
+    let attr_sp = item_span.apply_mark(expn_id.to_expn_id(), Transparency::Opaque);
 
     let test_ident = Ident::new(sym::test, attr_sp);
 
@@ -352,9 +353,9 @@ fn mk_unit_test(
     let test_extern =
         cx.item(sp, ast::AttrVec::new(), ast::ItemKind::ExternCrate(None, test_ident));
 
-    debug!("synthetic test extern:\n{}\n", pprust::item_to_string(&test_extern));
-    debug!("synthetic test item:\n{}\n", pprust::item_to_string(&test_const));
-    debug!("synthetic parsed item:\n{}\n", pprust::item_to_string(&parsed_item));
+    //debug!("synthetic test extern:\n{}\n", pprust::item_to_string(&test_extern));
+    //debug!("synthetic test item:\n{}\n", pprust::item_to_string(&test_const));
+    //debug!("synthetic parsed item:\n{}\n", pprust::item_to_string(&parsed_item));
 
     // this feels like a hack, but removing it makes the resolver explode as it
     // uses this id for expension but fails to find already expanded

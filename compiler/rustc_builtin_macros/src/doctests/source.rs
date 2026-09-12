@@ -11,7 +11,7 @@ use rustc_parse::new_parser_from_source_str;
 use rustc_session::parse::ParseSess;
 use rustc_span::source_map::SourceMap;
 use rustc_span::symbol::sym;
-use rustc_span::{FileName, InnerSpan, Span, kw};
+use rustc_span::{FileName, InnerSpan, Span, Symbol, kw};
 use thin_vec::ThinVec;
 
 use crate::doctests::parsing::CodeLineMapping;
@@ -37,7 +37,7 @@ const DOCTEST_CODE_WRAPPER: &str = "fn f(){";
 
 pub(super) fn parse_source(
     source: &str,
-    crate_name: &Option<&str>,
+    crate_name: &Option<Symbol>,
     parent_dcx: Option<DiagCtxtHandle<'_>>,
     span: Span,
     code_mappings: &[CodeLineMapping],
@@ -109,7 +109,11 @@ pub(super) fn parse_source(
         })
     }
 
-    fn check_item(item: &ast::Item, info: &mut ParseSourceInfo, crate_name: &Option<&str>) -> bool {
+    fn check_item(
+        item: &ast::Item,
+        info: &mut ParseSourceInfo,
+        crate_name: &Option<Symbol>,
+    ) -> bool {
         let mut is_extern_crate = false;
         if !info.has_global_allocator
             && item.attrs.iter().any(|attr| attr.has_name(sym::global_allocator))
@@ -128,8 +132,8 @@ pub(super) fn parse_source(
                     && let Some(crate_name) = crate_name
                 {
                     info.already_has_extern_crate = match original {
-                        Some(name) => name.as_str() == *crate_name,
-                        None => ident.as_str() == *crate_name,
+                        Some(name) => name == *crate_name,
+                        None => ident.name == *crate_name,
                     };
                 }
             }

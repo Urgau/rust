@@ -103,7 +103,12 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
         let has_more_than_one = collector.tests.len() > 1;
         let item_ident = item.kind.ident();
 
-        for (doctest_i, collected_doctest) in collector.tests.into_iter().enumerate() {
+        for (doctest_i, collected_doctest) in
+            collector.tests.into_iter().enumerate().filter(|(_, d)| {
+                // don't take into account non-Rust doctests, as well as compile_fail and standalone ones
+                d.config.rust && !d.config.compile_fail && !d.config.standalone_crate
+            })
+        {
             let Ok(parse_info) = source::parse_source(
                 &collected_doctest.source,
                 &Some(self.crate_name),

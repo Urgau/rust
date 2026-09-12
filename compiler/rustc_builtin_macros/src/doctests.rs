@@ -92,8 +92,8 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
         for test_source in collector.tests {
             if let Ok(parse_info) = source::parse_source(&test_source, &None, None, item.span, &[])
             {
-                let items = mk_unit_test(self, parse_info, item.span);
-                let items = AstFragment::Items(items.into());
+                let item = mk_unit_test(self, parse_info, item.span);
+                let items = AstFragment::Items(smallvec::smallvec![item]);
                 let items =
                     self.ext_cx.monotonic_expander().fully_expand_fragment(items).make_items();
                 self.expanded_doctests.extend(items);
@@ -136,22 +136,63 @@ fn mk_unit_test(
     exp: &mut DocTestsExpander<'_>,
     parse_info: ParseSourceInfo,
     item_span: Span,
-) -> Vec<Box<ast::Item>> {
-    let mut parsed_item = parse_info.parsed_item.unwrap();
+) -> Box<ast::Item> {
     let cx = &mut exp.ext_cx;
 
-    let ast::ItemKind::Fn(ref mut fn_) = parsed_item.kind else {
-        return vec![];
-    };
+    let mut doctest_mod_items = ThinVec::new();
 
-    let expn_id = cx.resolver.expansion_for_ast_pass(
-        item_span,
-        AstPass::TestHarness,
-        &[],
-        Some(exp.parent_node_id),
-    );
-    fn_.ident.span = item_span.apply_mark(expn_id.to_expn_id(), Transparency::SemiOpaque);
-    parsed_item.vis.kind = ast::VisibilityKind::Public;
+    let doctest_entry_point_ident = if parse_info.has_main_fn {
+        for stmt in parse_info.stmts {
+            match stmt.kind {
+                ast::StmtKind::Item(item) => {
+                    doctest_mod_items.push(item);
+                }
+                ast::StmtKind::MacCall(_mac_stmt) => {
+                    // TODO: handle
+                    /*let item = cx.expr_macro_call(item_span, mac_stmt.mac);
+                    item.attrs = mac_stmt.attrs;
+
+                    doctest_mod_items.push(item);*/
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        Ident::new(sym::main, item_span)
+    } else {
+        let expn_id = cx.resolver.expansion_for_ast_pass(
+            item_span,
+            AstPass::TestHarness,
+            &[],
+            Some(exp.parent_node_id),
+        );
+
+        let entrypoint_sp = item_span.apply_mark(expn_id.to_expn_id(), Transparency::Opaque);
+
+        let ret_ty = cx.ty(entrypoint_sp, ast::TyKind::Tup(ThinVec::new()));
+        let decl = cx.fn_decl(ThinVec::new(), ast::FnRetTy::Ty(ret_ty));
+        let sig = ast::FnSig { decl, header: ast::FnHeader::default(), span: entrypoint_sp };
+
+        let entrypoint_ident = Ident::new(sym::doctest, entrypoint_sp);
+        let entrypoint = cx.item(
+            entrypoint_sp,
+            ast::AttrVec::new(),
+            ast::ItemKind::Fn(Box::new(ast::Fn {
+                defaultness: ast::Defaultness::Implicit,
+                ident: entrypoint_ident,
+                generics: ast::Generics::default(),
+                contract: None,
+                define_opaque: None,
+                eii_impl: None,
+                sig,
+                body: Some(cx.block(entrypoint_sp, parse_info.stmts)),
+            })),
+        );
+
+        doctest_mod_items.push(entrypoint);
+
+        entrypoint_ident
+    };
 
     let expn_id = cx.resolver.expansion_for_ast_pass(
         DUMMY_SP,
@@ -165,7 +206,6 @@ fn mk_unit_test(
     let attr_sp = item_span.apply_mark(expn_id.to_expn_id(), Transparency::Opaque);
 
     let test_ident = Ident::new(sym::test, attr_sp);
-    let doctest_mod_ident = Ident::new(sym::doctest, sp);
 
     // creates test::$name
     let test_path = |name| cx.path(ret_ty_sp, vec![test_ident, Ident::from_str_and_span(name, sp)]);
@@ -235,7 +275,7 @@ fn mk_unit_test(
                         // $test_fn()
                         cx.expr_call(
                             ret_ty_sp,
-                            cx.expr_path(cx.path(sp, vec![doctest_mod_ident, fn_.ident])),
+                            cx.expr_path(cx.path(sp, vec![doctest_entry_point_ident])),
                             ThinVec::new(),
                         ), // )
                     ],
@@ -244,7 +284,7 @@ fn mk_unit_test(
         ],
     );
 
-    let test_path_symbol = Symbol::intern(&item_path(&exp.mod_path, &fn_.ident));
+    let test_path_symbol = Symbol::intern(&item_path(&exp.mod_path, &doctest_entry_point_ident));
 
     let location_info = get_location_info(cx, item_span);
 
@@ -262,7 +302,7 @@ fn mk_unit_test(
         ast::ItemKind::Const(
             ast::ConstItem {
                 defaultness: ast::Defaultness::Implicit,
-                ident: Ident::new(fn_.ident.name, sp),
+                ident: Ident::new(doctest_entry_point_ident.name, sp),
                 generics: ast::Generics::default(),
                 ty: cx.ty(sp, ast::TyKind::Path(None, test_path("TestDescAndFn"))),
                 define_opaque: None,
@@ -359,32 +399,29 @@ fn mk_unit_test(
     let test_extern =
         cx.item(sp, ast::AttrVec::new(), ast::ItemKind::ExternCrate(None, test_ident));
 
-    let mod_ = cx.item(
+    //debug!("synthetic parsed item:\n{}\n", pprust::item_to_string(&mod_));
+    debug!("synthetic test extern:\n{}\n", pprust::item_to_string(&test_extern));
+    debug!("synthetic test item:\n{}\n", pprust::item_to_string(&test_const));
+
+    // Access to libtest under a hygienic name
+    doctest_mod_items.push(test_extern);
+
+    // The generated test case
+    doctest_mod_items.push(test_const);
+
+    cx.item(
         sp,
         ast::AttrVec::new(),
         ast::ItemKind::Mod(
             rustc_ast::Safety::Default,
-            doctest_mod_ident,
+            Ident::new(sym::doctest, sp),
             ast::ModKind::Loaded(
-                [parsed_item].into(),
+                doctest_mod_items,
                 ast::Inline::Yes,
                 ast::ModSpans { inner_span: sp, inject_use_span: sp },
             ),
         ),
-    );
-
-    debug!("synthetic parsed item:\n{}\n", pprust::item_to_string(&mod_));
-    debug!("synthetic test extern:\n{}\n", pprust::item_to_string(&test_extern));
-    debug!("synthetic test item:\n{}\n", pprust::item_to_string(&test_const));
-
-    vec![
-        // The doctest
-        mod_,
-        // Access to libtest under a hygienic name
-        test_extern,
-        // The generated test case
-        test_const,
-    ]
+    )
 }
 
 fn item_path(mod_path: &[Ident], item_ident: &Ident) -> String {

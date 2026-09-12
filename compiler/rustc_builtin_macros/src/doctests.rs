@@ -50,6 +50,14 @@ struct DocTestsExpander<'a> {
     parent_node_id: NodeId,
 }
 
+struct CollectedDocTest {
+    source: String,
+    config: parsing::LangString,
+    #[allow(dead_code)]
+    rel_line: parsing::MdRelLine,
+    code_mappings: Vec<parsing::CodeLineMapping>,
+}
+
 impl<'a> MutVisitor for DocTestsExpander<'a> {
     fn visit_crate(&mut self, c: &mut ast::Crate) {
         let prev_tests = mem::take(&mut self.expanded_doctests);
@@ -69,18 +77,18 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
             });
 
         struct DocTestsCollector {
-            tests: Vec<String>,
+            tests: Vec<CollectedDocTest>,
         }
 
         impl parsing::DocTestVisitor for DocTestsCollector {
             fn visit_test(
                 &mut self,
-                test: String,
-                _config: parsing::LangString,
-                _rel_line: parsing::MdRelLine,
-                _code_mappings: Vec<parsing::CodeLineMapping>,
+                source: String,
+                config: parsing::LangString,
+                rel_line: parsing::MdRelLine,
+                code_mappings: Vec<parsing::CodeLineMapping>,
             ) {
-                self.tests.push(test);
+                self.tests.push(CollectedDocTest { source, config, rel_line, code_mappings });
             }
         }
 
@@ -95,16 +103,20 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
         let has_more_than_one = collector.tests.len() > 1;
         let item_ident = item.kind.ident();
 
-        for (test_i, test_source) in collector.tests.into_iter().enumerate() {
-            let Ok(parse_info) =
-                source::parse_source(&test_source, &Some(self.crate_name), None, item.span, &[])
-            else {
+        for (doctest_i, collected_doctest) in collector.tests.into_iter().enumerate() {
+            let Ok(parse_info) = source::parse_source(
+                &collected_doctest.source,
+                &Some(self.crate_name),
+                None,
+                item.span,
+                &collected_doctest.code_mappings,
+            ) else {
                 continue;
             };
 
             let name = if let Some(ident) = &item_ident {
                 if has_more_than_one {
-                    Symbol::intern(&format!("{}_{test_i}", ident.name.as_str()))
+                    Symbol::intern(&format!("{}_{doctest_i}", ident.name.as_str()))
                 } else {
                     ident.name
                 }
@@ -112,7 +124,7 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
                 sym::f
             };
 
-            let item = mk_unit_test(self, parse_info, item.span, name);
+            let item = mk_unit_test(self, collected_doctest, parse_info, item.span, name);
             let items = AstFragment::Items(smallvec::smallvec![item]);
             let items = self.ext_cx.monotonic_expander().fully_expand_fragment(items).make_items();
             self.expanded_doctests.extend(items);
@@ -152,6 +164,7 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
 
 fn mk_unit_test(
     exp: &mut DocTestsExpander<'_>,
+    collected_doctest: CollectedDocTest,
     parse_info: ParseSourceInfo,
     item_span: Span,
     doctest_name: Symbol,
@@ -363,6 +376,7 @@ fn mk_unit_test(
                                         // ignore: true | false
                                         field(
                                             "ignore",
+                                            // TODO: use collected_doctest.config.ignore
                                             cx.expr_bool(sp, false /*should_ignore(&item)),*/)
                                         ),
                                         // ignore_message: Some("...") | None
@@ -387,24 +401,20 @@ fn mk_unit_test(
                                         // compile_fail: true | false
                                         field("compile_fail", cx.expr_bool(sp, false)),
                                         // no_run: true | false
-                                        field("no_run", cx.expr_bool(sp, false)),
+                                        field(
+                                            "no_run",
+                                            cx.expr_bool(sp, collected_doctest.config.no_run)
+                                        ),
                                         // should_panic: ...
                                         field(
-                                            "should_panic", /*match should_panic(cx, &item) {
-                                                            // test::ShouldPanic::No
-                                                            ShouldPanic::No => {*/
-                                            cx.expr_path(should_panic_path("No")) /*}
-                                                                                      // test::ShouldPanic::Yes
-                                                                                      ShouldPanic::Yes(None) => {
-                                                                                          cx.expr_path(should_panic_path("Yes"))
-                                                                                      }
-                                                                                      // test::ShouldPanic::YesWithMessage("...")
-                                                                                      ShouldPanic::Yes(Some(sym)) => cx.expr_call(
-                                                                                          sp,
-                                                                                          cx.expr_path(should_panic_path("YesWithMessage")),
-                                                                                          thin_vec![cx.expr_str(sp, sym)],
-                                                                                      ),
-                                                                                  },*/
+                                            "should_panic",
+                                            cx.expr_path(should_panic_path(
+                                                if collected_doctest.config.should_panic {
+                                                    "Yes"
+                                                } else {
+                                                    "No"
+                                                }
+                                            ))
                                         ),
                                         // test_type: ...
                                         field(

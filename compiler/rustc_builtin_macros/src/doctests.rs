@@ -89,15 +89,29 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
             parsing::ErrorCodes::Yes, /*, None*/
         );
 
-        for test_source in collector.tests {
-            if let Ok(parse_info) = source::parse_source(&test_source, &None, None, item.span, &[])
-            {
-                let item = mk_unit_test(self, parse_info, item.span);
-                let items = AstFragment::Items(smallvec::smallvec![item]);
-                let items =
-                    self.ext_cx.monotonic_expander().fully_expand_fragment(items).make_items();
-                self.expanded_doctests.extend(items);
-            }
+        let has_more_than_one = collector.tests.len() > 1;
+        let item_ident = item.kind.ident();
+
+        for (test_i, test_source) in collector.tests.into_iter().enumerate() {
+            let Ok(parse_info) = source::parse_source(&test_source, &None, None, item.span, &[])
+            else {
+                continue;
+            };
+
+            let name = if let Some(ident) = &item_ident {
+                if has_more_than_one {
+                    Symbol::intern(&format!("{}_{test_i}", ident.name.as_str()))
+                } else {
+                    ident.name
+                }
+            } else {
+                sym::f
+            };
+
+            let item = mk_unit_test(self, parse_info, item.span, name);
+            let items = AstFragment::Items(smallvec::smallvec![item]);
+            let items = self.ext_cx.monotonic_expander().fully_expand_fragment(items).make_items();
+            self.expanded_doctests.extend(items);
         }
 
         // We don't want to recurse into anything other than mods, since
@@ -136,6 +150,7 @@ fn mk_unit_test(
     exp: &mut DocTestsExpander<'_>,
     parse_info: ParseSourceInfo,
     item_span: Span,
+    doctest_name: Symbol,
 ) -> Box<ast::Item> {
     let cx = &mut exp.ext_cx;
 
@@ -285,7 +300,8 @@ fn mk_unit_test(
         ],
     );
 
-    let test_path_symbol = Symbol::intern(&item_path(&exp.mod_path, &doctest_entry_point_ident));
+    let test_path_symbol =
+        Symbol::intern(&item_path(&exp.mod_path, &Ident::new(doctest_name, DUMMY_SP)));
 
     let location_info = get_location_info(cx, item_span);
 

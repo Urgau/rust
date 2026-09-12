@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use rustc_ast::token::{Delimiter, TokenKind};
 use rustc_ast::tokenstream::TokenTree;
-use rustc_ast::{self as ast, AttrStyle, HasAttrs, StmtKind};
+use rustc_ast::{self as ast, AttrStyle, HasAttrs, Stmt, StmtKind};
 use rustc_errors::emitter::get_stderr_color_choice;
 use rustc_errors::{AutoStream, ColorChoice, ColorConfig, DiagCtxtHandle};
 use rustc_parse::lexer::StripTokens;
@@ -12,12 +12,13 @@ use rustc_session::parse::ParseSess;
 use rustc_span::source_map::SourceMap;
 use rustc_span::symbol::sym;
 use rustc_span::{FileName, InnerSpan, Span, kw};
+use thin_vec::ThinVec;
 
 use crate::doctests::parsing::CodeLineMapping;
 
 #[derive(Default, Debug)]
 pub(super) struct ParseSourceInfo {
-    pub(super) parsed_item: Option<Box<ast::Item>>,
+    pub(super) stmts: ThinVec<Stmt>,
     pub(super) has_main_fn: bool,
     pub(super) already_has_extern_crate: bool,
     pub(super) supports_color: bool,
@@ -26,10 +27,10 @@ pub(super) struct ParseSourceInfo {
     pub(super) everything_else: String,
     pub(super) crates: String,
     /// Inner attributes (`#![...]`) from the source that have to be put at the crate level.
-    pub(super) crate_attrs: String,
+    pub(super) crate_attrs: ast::AttrVec,
     /// Inner attributes (`#![...]`) from the source that can be put into a module and therefore do
     /// not inhibit merging: even in the merged test, the attributes can be isolated to the test.
-    pub(super) module_attrs: String,
+    pub(super) module_attrs: ast::AttrVec,
 }
 
 const DOCTEST_CODE_WRAPPER: &str = "fn f(){";
@@ -156,11 +157,12 @@ pub(super) fn parse_source(
     );
 
     let result = match parsed {
-        Ok(Some(ref item))
-            if let ast::ItemKind::Fn(ref fn_item) = item.kind
-                && let Some(ref body) = fn_item.body =>
-        {
-            for attr in &item.attrs {
+        Ok(Some(ast::Item {
+            attrs,
+            kind: ast::ItemKind::Fn(ast::Fn { body: Some(body), .. }),
+            ..
+        })) => {
+            for attr in attrs {
                 if attr.style == AttrStyle::Outer || attr.has_any_name(not_crate_attrs) {
                     // There is one exception to these attributes:
                     // `#![allow(internal_features)]`. If this attribute is used, we need to
@@ -172,12 +174,12 @@ pub(super) fn parse_source(
                                 || sub_attr.has_name(sym::incomplete_features)
                         })
                     {
-                        push_to_s(&mut info.crate_attrs, source, attr.span, &mut prev_span_hi);
+                        info.crate_attrs.push(attr);
                     } else {
-                        push_to_s(&mut info.module_attrs, source, attr.span, &mut prev_span_hi);
+                        info.module_attrs.push(attr);
                     }
                 } else {
-                    push_to_s(&mut info.crate_attrs, source, attr.span, &mut prev_span_hi);
+                    info.crate_attrs.push(attr);
                 }
             }
             let mut has_non_items = false;
@@ -249,6 +251,7 @@ pub(super) fn parse_source(
                     push_to_s(&mut info.crates, source, span, &mut prev_span_hi);
                 }
             }
+            info.stmts = body.stmts;
             if has_non_items {
                 let warning_span = first_non_item_span
                     .and_then(|span| span_in_doctest_source(span, code_mappings))
@@ -266,7 +269,6 @@ pub(super) fn parse_source(
                 }
                 info.has_main_fn = false;
             }
-            info.parsed_item = Some(item.clone());
             Ok(info)
         }
         Err(e) => {

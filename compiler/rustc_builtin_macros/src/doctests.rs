@@ -147,12 +147,11 @@ fn mk_unit_test(
                 ast::StmtKind::Item(item) => {
                     doctest_mod_items.push(item);
                 }
-                ast::StmtKind::MacCall(_mac_stmt) => {
-                    // TODO: handle
-                    /*let item = cx.expr_macro_call(item_span, mac_stmt.mac);
-                    item.attrs = mac_stmt.attrs;
+                ast::StmtKind::MacCall(mac_stmt) => {
+                    let item =
+                        cx.item(item_span, mac_stmt.attrs, ast::ItemKind::MacCall(mac_stmt.mac));
 
-                    doctest_mod_items.push(item);*/
+                    doctest_mod_items.push(item);
                 }
                 _ => unreachable!(),
             }
@@ -169,10 +168,12 @@ fn mk_unit_test(
 
         let entrypoint_sp = item_span.apply_mark(expn_id.to_expn_id(), Transparency::Opaque);
 
+        // creates fn() -> ()
         let ret_ty = cx.ty(entrypoint_sp, ast::TyKind::Tup(ThinVec::new()));
         let decl = cx.fn_decl(ThinVec::new(), ast::FnRetTy::Ty(ret_ty));
         let sig = ast::FnSig { decl, header: ast::FnHeader::default(), span: entrypoint_sp };
 
+        // creates fn doctest() -> () { ... }
         let entrypoint_ident = Ident::new(sym::doctest, entrypoint_sp);
         let entrypoint = cx.item(
             entrypoint_sp,

@@ -11,7 +11,7 @@ use rustc_expand::expand::{AstFragment, ExpansionConfig};
 use rustc_feature::Features;
 use rustc_session::Session;
 use rustc_span::hygiene::{AstPass, Transparency};
-use rustc_span::{DUMMY_SP, Ident, RemapPathScopeComponents, Span, Symbol, sym};
+use rustc_span::{DUMMY_SP, Ident, RemapPathScopeComponents, Span, Symbol, kw, sym};
 use thin_vec::{ThinVec, thin_vec};
 use tracing::debug;
 
@@ -24,6 +24,7 @@ mod source;
 /// existing main functions, and synthesizing a main test harness
 pub fn expand_doctests(
     krate: &mut ast::Crate,
+    crate_name: Symbol,
     sess: &Session,
     features: &Features,
     resolver: &mut dyn ResolverExpand,
@@ -33,6 +34,7 @@ pub fn expand_doctests(
 
     DocTestsExpander {
         ext_cx,
+        crate_name,
         expanded_doctests: Vec::new(),
         mod_path: Vec::new(),
         parent_node_id: ast::CRATE_NODE_ID,
@@ -42,6 +44,7 @@ pub fn expand_doctests(
 
 struct DocTestsExpander<'a> {
     ext_cx: ExtCtxt<'a>,
+    crate_name: Symbol,
     expanded_doctests: Vec<Box<ast::Item>>,
     mod_path: Vec<Ident>,
     parent_node_id: NodeId,
@@ -93,7 +96,8 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
         let item_ident = item.kind.ident();
 
         for (test_i, test_source) in collector.tests.into_iter().enumerate() {
-            let Ok(parse_info) = source::parse_source(&test_source, &None, None, item.span, &[])
+            let Ok(parse_info) =
+                source::parse_source(&test_source, &Some(self.crate_name), None, item.span, &[])
             else {
                 continue;
             };
@@ -155,6 +159,16 @@ fn mk_unit_test(
     let cx = &mut exp.ext_cx;
 
     let mut doctest_mod_items = ThinVec::new();
+
+    if !parse_info.already_has_extern_crate {
+        let extern_crate_self = cx.item(
+            item_span,
+            ast::AttrVec::new(),
+            ast::ItemKind::ExternCrate(Some(kw::SelfLower), Ident::new(exp.crate_name, item_span)),
+        );
+
+        doctest_mod_items.push(extern_crate_self);
+    }
 
     let doctest_entry_point_ident = if parse_info.has_main_fn {
         for stmt in parse_info.stmts {
@@ -417,8 +431,8 @@ fn mk_unit_test(
         cx.item(sp, ast::AttrVec::new(), ast::ItemKind::ExternCrate(None, test_ident));
 
     //debug!("synthetic parsed item:\n{}\n", pprust::item_to_string(&mod_));
-    debug!("synthetic test extern:\n{}\n", pprust::item_to_string(&test_extern));
-    debug!("synthetic test item:\n{}\n", pprust::item_to_string(&test_const));
+    //debug!("synthetic test extern:\n{}\n", pprust::item_to_string(&test_extern));
+    //debug!("synthetic test item:\n{}\n", pprust::item_to_string(&test_const));
 
     // Access to libtest under a hygienic name
     doctest_mod_items.push(test_extern);
@@ -426,7 +440,7 @@ fn mk_unit_test(
     // The generated test case
     doctest_mod_items.push(test_const);
 
-    cx.item(
+    let mod_ = cx.item(
         sp,
         ast::AttrVec::new(),
         ast::ItemKind::Mod(
@@ -438,7 +452,10 @@ fn mk_unit_test(
                 ast::ModSpans { inner_span: sp, inject_use_span: sp },
             ),
         ),
-    )
+    );
+
+    debug!("synthetic test extern:\n{}\n", pprust::item_to_string(&mod_));
+    mod_
 }
 
 fn item_path(mod_path: &[Ident], item_ident: &Ident) -> String {

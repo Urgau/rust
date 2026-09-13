@@ -670,12 +670,12 @@ macro_rules! common_visitor_and_walkers {
                 walk_fn(self, fk)
             }
 
+            fn visit_stmt(&mut self, s: &$($lt)? $($mut)? Stmt) -> Self::Result {
+                walk_stmt(self, s)
+            }
+
             // (non-mut) `Visitor`-only methods
             $(
-                fn visit_stmt(&mut self, s: &$lt Stmt) -> Self::Result {
-                    walk_stmt(self, s)
-                }
-
                 fn visit_nested_use_tree(&mut self, use_tree: &$lt UseTree, id: NodeId)
                     -> Self::Result
                 {
@@ -686,8 +686,6 @@ macro_rules! common_visitor_and_walkers {
 
             // `MutVisitor`-only methods
             $(
-                // Span visiting is no longer used, but we keep it for now,
-                // in case it's needed for something like #127241.
                 #[inline]
                 fn visit_span(&mut self, _sp: &$mut Span) {
                     impl_visitable!(|&mut self: Span, visitor: &mut V, _extra: ()| {
@@ -963,6 +961,23 @@ macro_rules! common_visitor_and_walkers {
             V::Result::output()
         }
 
+        pub fn walk_stmt<$($lt,)? V: $Visitor$(<$lt>)?>(visitor: &mut V, statement: &$($lt)? $($mut)? Stmt) -> V::Result {
+            let Stmt { id, kind, span } = statement;
+            visit_visitable!(visitor, id, span);
+            match kind {
+                StmtKind::Let(local) => try_visit!(visitor.visit_local(local)),
+                StmtKind::Item(item) => try_visit!(visitor.visit_item(item)),
+                StmtKind::Expr(expr) | StmtKind::Semi(expr) => try_visit!(visitor.visit_expr(expr)),
+                StmtKind::Empty => {}
+                StmtKind::MacCall(mac) => {
+                    let MacCallStmt { mac, attrs, style: _, tokens: _ } = mac;
+                    visit_visitable!(visitor, attrs);
+                    try_visit!(visitor.visit_mac_call(mac));
+                }
+            }
+            V::Result::output()
+        }
+
         impl_walkable!(|&$($lt)? $($mut)? self: Impl, vis: &mut V| {
             let Impl { generics, of_trait, self_ty, items, constness: _ } = self;
             try_visit!(vis.visit_generics(generics));
@@ -1195,21 +1210,4 @@ generate_list_visit_fns! {
     visit_param, Param;
     visit_field_def, FieldDef;
     visit_arm, Arm;
-}
-
-pub fn walk_stmt<'a, V: Visitor<'a>>(visitor: &mut V, statement: &'a Stmt) -> V::Result {
-    let Stmt { id, kind, span: _ } = statement;
-    try_visit!(visitor.visit_id(*id));
-    match kind {
-        StmtKind::Let(local) => try_visit!(visitor.visit_local(local)),
-        StmtKind::Item(item) => try_visit!(visitor.visit_item(item)),
-        StmtKind::Expr(expr) | StmtKind::Semi(expr) => try_visit!(visitor.visit_expr(expr)),
-        StmtKind::Empty => {}
-        StmtKind::MacCall(mac) => {
-            let MacCallStmt { mac, attrs, style: _, tokens: _ } = &**mac;
-            walk_list!(visitor, visit_attribute, attrs);
-            try_visit!(visitor.visit_mac_call(mac));
-        }
-    }
-    V::Result::output()
 }

@@ -3597,6 +3597,7 @@ version = "0.0.0"
 dependencies = [
  "bitflags",
  "memchr",
+ "pulldown-cmark",
  "rustc-literal-escaper",
  "rustc_ast_ir",
  "rustc_data_structures",

@@ -111,6 +111,7 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
         {
             let Ok(parse_info) = source::parse_source(
                 &collected_doctest.source,
+                &self.ext_cx.sess.psess,
                 &Some(self.crate_name),
                 None,
                 item.span,

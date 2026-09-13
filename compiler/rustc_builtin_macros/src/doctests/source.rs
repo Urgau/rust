@@ -1,15 +1,16 @@
-use std::io;
-use std::sync::Arc;
+//use std::io;
+//use std::sync::Arc;
 
 use rustc_ast::token::{Delimiter, TokenKind};
 use rustc_ast::tokenstream::TokenTree;
 use rustc_ast::{self as ast, AttrStyle, HasAttrs, Stmt, StmtKind};
-use rustc_errors::emitter::get_stderr_color_choice;
-use rustc_errors::{AutoStream, ColorChoice, ColorConfig, DiagCtxtHandle};
+//use rustc_span::source_map::SourceMap;
+use rustc_errors::DiagCtxtHandle;
+//use rustc_errors::emitter::get_stderr_color_choice;
+//use rustc_errors::{AutoStream, ColorChoice, ColorConfig, DiagCtxtHandle};
 use rustc_parse::lexer::StripTokens;
 use rustc_parse::new_parser_from_source_str;
 use rustc_session::parse::ParseSess;
-use rustc_span::source_map::SourceMap;
 use rustc_span::symbol::sym;
 use rustc_span::{FileName, InnerSpan, Span, Symbol, kw};
 use thin_vec::ThinVec;
@@ -21,7 +22,7 @@ pub(super) struct ParseSourceInfo {
     pub(super) stmts: ThinVec<Stmt>,
     pub(super) has_main_fn: bool,
     pub(super) already_has_extern_crate: bool,
-    pub(super) supports_color: bool,
+    //pub(super) supports_color: bool,
     pub(super) has_global_allocator: bool,
     pub(super) has_macro_def: bool,
     pub(super) everything_else: String,
@@ -37,14 +38,15 @@ const DOCTEST_CODE_WRAPPER: &str = "fn f(){";
 
 pub(super) fn parse_source(
     source: &str,
+    psess: &ParseSess,
     crate_name: &Option<Symbol>,
     parent_dcx: Option<DiagCtxtHandle<'_>>,
     span: Span,
     code_mappings: &[CodeLineMapping],
 ) -> Result<ParseSourceInfo, ()> {
-    use rustc_errors::DiagCtxt;
-    use rustc_errors::annotate_snippet_emitter_writer::AnnotateSnippetEmitter;
-    use rustc_span::source_map::FilePathMapping;
+    //use rustc_errors::DiagCtxt;
+    //use rustc_errors::annotate_snippet_emitter_writer::AnnotateSnippetEmitter;
+    //use rustc_span::source_map::FilePathMapping;
 
     let mut info =
         ParseSourceInfo { already_has_extern_crate: crate_name.is_none(), ..Default::default() };
@@ -53,7 +55,7 @@ pub(super) fn parse_source(
 
     let filename = FileName::anon_source_code(&wrapped_source);
 
-    let sm = Arc::new(SourceMap::new(FilePathMapping::empty()));
+    /*let sm = Arc::new(SourceMap::new(FilePathMapping::empty()));
     let supports_color = match get_stderr_color_choice(ColorConfig::Auto, &std::io::stderr()) {
         ColorChoice::Auto => unreachable!(),
         ColorChoice::AlwaysAnsi | ColorChoice::Always => true,
@@ -66,15 +68,15 @@ pub(super) fn parse_source(
 
     // FIXME(misdreavus): pass `-Z treat-err-as-bug` to the doctest parser
     let dcx = DiagCtxt::new(Box::new(emitter)).disable_warnings();
-    let psess = ParseSess::with_dcx(dcx, sm);
+    let psess = ParseSess::with_dcx(dcx, sm);*/
 
     // Don't strip any tokens; it wouldn't matter anyway because the source is wrapped in a function.
     let mut parser =
-        match new_parser_from_source_str(&psess, filename, wrapped_source, StripTokens::Nothing) {
+        match new_parser_from_source_str(psess, filename, wrapped_source, StripTokens::Nothing) {
             Ok(p) => p,
             Err(errs) => {
                 errs.into_iter().for_each(|err| err.cancel());
-                reset_error_count(&psess);
+                //reset_error_count(&psess);
                 return Err(());
             }
         };
@@ -145,13 +147,13 @@ pub(super) fn parse_source(
         is_extern_crate
     }
 
-    fn reset_error_count(psess: &ParseSess) {
+    /*fn reset_error_count(psess: &ParseSess) {
         // Reset errors so that they won't be reported as compiler bugs when dropping the
         // dcx. Any errors in the tests will be reported when the test file is compiled,
         // Note that we still need to cancel the errors above otherwise `Diag` will panic on
         // drop.
         psess.dcx().reset_err_count();
-    }
+    }*/
 
     let mut prev_span_hi = 0;
     let not_crate_attrs = &[sym::forbid, sym::allow, sym::warn, sym::deny, sym::expect];
@@ -221,7 +223,7 @@ pub(super) fn parse_source(
                     }
                     StmtKind::Expr(ref expr) => {
                         if matches!(expr.kind, ast::ExprKind::Err(_)) {
-                            reset_error_count(&psess);
+                            //reset_error_count(&psess);
                             return Err(());
                         }
                         has_non_items = true;
@@ -276,12 +278,13 @@ pub(super) fn parse_source(
             Ok(info)
         }
         Err(e) => {
-            e.cancel();
+            e.emit();
+            //e.cancel();
             Err(())
         }
         _ => Err(()),
     };
 
-    reset_error_count(&psess);
+    //reset_error_count(&psess);
     result
 }

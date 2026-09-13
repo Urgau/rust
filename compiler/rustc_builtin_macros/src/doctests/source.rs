@@ -11,6 +11,7 @@ use rustc_errors::DiagCtxtHandle;
 use rustc_parse::lexer::StripTokens;
 use rustc_parse::new_parser_from_source_str;
 use rustc_session::parse::ParseSess;
+use rustc_span::source_map::SourceMap;
 use rustc_span::symbol::sym;
 use rustc_span::{FileName, InnerSpan, Span, Symbol, kw};
 use thin_vec::ThinVec;
@@ -34,7 +35,7 @@ pub(super) struct ParseSourceInfo {
     pub(super) module_attrs: ast::AttrVec,
 }
 
-const DOCTEST_CODE_WRAPPER: &str = "fn f(){";
+const DOCTEST_CODE_WRAPPER: &str = "fn f(){\n";
 
 pub(super) fn parse_source(
     source: &str,
@@ -91,24 +92,6 @@ pub(super) fn parse_source(
         }
         s.push_str(&source[*prev_span_hi..hi]);
         *prev_span_hi = hi;
-    }
-
-    fn span_in_doctest_source(span: Span, code_mappings: &[CodeLineMapping]) -> Option<Span> {
-        let extra_len = DOCTEST_CODE_WRAPPER.len();
-        let lo = (span.lo().0 as usize).checked_sub(extra_len)?;
-        let hi = (span.hi().0 as usize).checked_sub(extra_len)?;
-        if hi < lo {
-            return None;
-        }
-        code_mappings.iter().find_map(|mapping| {
-            if mapping.generated.start <= lo && hi <= mapping.generated.end {
-                let start = lo - mapping.generated.start;
-                let end = hi - mapping.generated.start;
-                Some(mapping.original.from_inner(InnerSpan::new(start, end)))
-            } else {
-                None
-            }
-        })
     }
 
     fn check_item(
@@ -260,7 +243,9 @@ pub(super) fn parse_source(
             info.stmts = body.stmts;
             if has_non_items {
                 let warning_span = first_non_item_span
-                    .and_then(|span| span_in_doctest_source(span, code_mappings))
+                    .and_then(|span| {
+                        span_in_doctest_source(span, psess.source_map(), code_mappings)
+                    })
                     .unwrap_or(span);
                 if info.has_main_fn
                     && let Some(dcx) = parent_dcx
@@ -287,4 +272,31 @@ pub(super) fn parse_source(
 
     //reset_error_count(&psess);
     result
+}
+
+pub(crate) fn span_in_doctest_source(
+    span: Span,
+    source_map: &SourceMap,
+    code_mappings: &[CodeLineMapping],
+) -> Option<Span> {
+    const EXTRA_LEN: usize = DOCTEST_CODE_WRAPPER.len();
+
+    let lo = source_map.lookup_source_file(span.lo()).relative_position(span.lo());
+    let hi = source_map.lookup_source_file(span.hi()).relative_position(span.hi());
+
+    let lo = (lo.0 as usize).checked_sub(EXTRA_LEN)?;
+    let hi = (hi.0 as usize).checked_sub(EXTRA_LEN)?;
+
+    if hi < lo {
+        return None;
+    }
+    code_mappings.iter().find_map(|mapping| {
+        if mapping.generated.start <= lo && hi <= mapping.generated.end {
+            let start = lo - mapping.generated.start;
+            let end = hi - mapping.generated.start;
+            Some(mapping.original.from_inner(InnerSpan::new(start, end)))
+        } else {
+            None
+        }
+    })
 }

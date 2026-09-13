@@ -69,12 +69,15 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
     }
 
     fn visit_item(&mut self, item: &mut ast::Item) {
-        let doc_strs: String =
-            item.attrs.iter().filter_map(|a| a.doc_str()).fold(String::new(), |mut acc, s| {
-                acc.push_str(s.as_str());
-                acc.push('\n');
-                acc
-            });
+        let (doc_fragments, _attrs) = rustc_ast::rustdoc::attrs_to_doc_fragments(
+            item.attrs.iter().map(|attr| (attr, None)),
+            true,
+        );
+
+        let mut doc_strs = String::new();
+        for frag in &doc_fragments {
+            rustc_ast::rustdoc::add_doc_fragment(&mut doc_strs, frag);
+        }
 
         struct DocTestsCollector {
             tests: Vec<CollectedDocTest>,
@@ -88,6 +91,7 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
                 rel_line: parsing::MdRelLine,
                 code_mappings: Vec<parsing::CodeLineMapping>,
             ) {
+                debug!(?source, ?config, ?rel_line, ?code_mappings);
                 self.tests.push(CollectedDocTest { source, config, rel_line, code_mappings });
             }
         }
@@ -97,7 +101,8 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
         parsing::find_testable_code(
             &doc_strs,
             &mut collector,
-            parsing::ErrorCodes::Yes, /*, None*/
+            parsing::ErrorCodes::Yes,
+            Some(&parsing::ExtraInfo::new(self.ext_cx.source_map(), Some(&doc_fragments))),
         );
 
         let has_more_than_one = collector.tests.len() > 1;

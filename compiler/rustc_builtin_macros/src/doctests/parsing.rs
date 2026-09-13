@@ -8,11 +8,13 @@ use std::str::CharIndices;
 use pulldown_cmark::{
     self, BrokenLink, CodeBlockKind, CowStr, Event, LinkType, Options, Parser, Tag, TagEnd, html,
 };
+use rustc_ast::rustdoc::{DocFragment, source_span_for_markdown_range};
 use rustc_errors::{Diag, DiagMessage};
 //use rustc_hir::def_id::LocalDefId;
 //use rustc_middle::ty::TyCtxt;
 use rustc_span::Span;
 use rustc_span::edition::Edition;
+use rustc_span::source_map::SourceMap;
 
 /// Options for rendering Markdown in the main body of documentation.
 fn main_body_opts() -> Options {
@@ -89,16 +91,16 @@ pub(crate) fn find_testable_code<T: DocTestVisitor>(
     doc: &str,
     tests: &mut T,
     error_codes: ErrorCodes,
-    //extra_info: Option<&ExtraInfo<'_, '_>>,
+    extra_info: Option<&ExtraInfo<'_ /*, '_*/>>,
 ) {
-    find_codes(doc, tests, error_codes, /*extra_info,*/ false)
+    find_codes(doc, tests, error_codes, extra_info, false)
 }
 
 pub(crate) fn find_codes<T: DocTestVisitor>(
     doc: &str,
     tests: &mut T,
     error_codes: ErrorCodes,
-    //extra_info: Option<&ExtraInfo<'_, '_>>,
+    extra_info: Option<&ExtraInfo<'_ /*, '_*/>>,
     include_non_rust: bool,
 ) {
     let mut parser = Parser::new_ext(doc, main_body_opts()).into_offset_iter();
@@ -130,8 +132,7 @@ pub(crate) fn find_codes<T: DocTestVisitor>(
                     test_s.push_str(&s);
                     text_events.push((start..test_s.len(), offset));
                 }
-                let (text, code_mappings) =
-                    map_code_block(doc, &test_s, &text_events /*, extra_info*/);
+                let (text, code_mappings) = map_code_block(doc, &test_s, &text_events, extra_info);
 
                 nb_lines += doc[prev_offset..offset.start].lines().count();
                 // If there are characters between the preceding line ending and
@@ -161,7 +162,7 @@ fn map_code_block(
     doc: &str,
     code: &str,
     text_events: &[(Range<usize>, Range<usize>)],
-    //extra_info: Option<&ExtraInfo<'_, '_>>,
+    extra_info: Option<&ExtraInfo<'_ /*, '_*/>>,
 ) -> (String, Vec<CodeLineMapping>) {
     let mut text = String::new();
     let mut code_mappings = Vec::new();
@@ -177,18 +178,18 @@ fn map_code_block(
         text.push_str(&mapped_line);
         let generated = generated_start..text.len();
 
-        /*if mapped_line.as_ref() == line
+        if mapped_line.as_ref() == line
             && let Some(extra_info) = extra_info
             && let Some(fragments) = extra_info.fragments
         {
             let code_line = code_line_start..code_line_start + line.len();
             if let Some(md_range) = markdown_range_for_code_range(text_events, code_line)
                 && let Some((original, _)) =
-                    source_span_for_markdown_range(extra_info.tcx, doc, &md_range, fragments)
+                    source_span_for_markdown_range(extra_info.source_map, doc, &md_range, fragments)
             {
                 code_mappings.push(CodeLineMapping { generated, original });
             }
-        }*/
+        }
 
         code_line_start += line.len() + 1;
     }
@@ -211,24 +212,26 @@ fn markdown_range_for_code_range(
     })
 }
 
-/*pub(crate) struct ExtraInfo<'doc, 'tcx> {
-    def_id: LocalDefId,
+pub(crate) struct ExtraInfo<'doc /*, 'tcx*/> {
+    /*def_id: LocalDefId,
     sp: Span,
-    tcx: TyCtxt<'tcx>,
+    tcx: TyCtxt<'tcx>,*/
+    source_map: &'doc SourceMap,
     fragments: Option<&'doc [DocFragment]>,
 }
 
-impl<'doc, 'tcx> ExtraInfo<'doc, 'tcx> {
+impl<'doc /*, 'tcx*/> ExtraInfo<'doc /*, 'tcx*/> {
     pub(crate) fn new(
-        tcx: TyCtxt<'tcx>,
+        /*tcx: TyCtxt<'tcx>,
         def_id: LocalDefId,
-        sp: Span,
+        sp: Span,*/
+        source_map: &'doc SourceMap,
         fragments: Option<&'doc [DocFragment]>,
-    ) -> ExtraInfo<'doc, 'tcx> {
-        ExtraInfo { def_id, sp, tcx, fragments }
+    ) -> ExtraInfo<'doc /*, 'tcx*/> {
+        ExtraInfo { /*def_id, sp, tcx,*/ source_map, fragments }
     }
 
-    fn error_invalid_codeblock_attr(&self, msg: impl Into<DiagMessage>) {
+    /*fn error_invalid_codeblock_attr(&self, msg: impl Into<DiagMessage>) {
         self.error_invalid_codeblock_attr_with_help(msg, |_| {});
     }
 
@@ -246,8 +249,8 @@ impl<'doc, 'tcx> ExtraInfo<'doc, 'tcx> {
                 f(lint);
             }),
         );
-    }
-}*/
+    }*/
+}
 
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub(crate) struct LangString {

@@ -11,6 +11,7 @@ use rustc_expand::expand::{AstFragment, ExpansionConfig};
 use rustc_feature::Features;
 use rustc_session::Session;
 use rustc_span::hygiene::{AstPass, Transparency};
+use rustc_span::source_map::SourceMap;
 use rustc_span::{DUMMY_SP, Ident, RemapPathScopeComponents, Span, Symbol, kw, sym};
 use thin_vec::{ThinVec, thin_vec};
 use tracing::debug;
@@ -96,6 +97,21 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
             }
         }
 
+        struct DocTestSpansAdjustor<'doc> {
+            source_map: &'doc SourceMap,
+            code_mappings: &'doc [parsing::CodeLineMapping],
+        }
+
+        impl MutVisitor for DocTestSpansAdjustor<'_> {
+            fn visit_span(&mut self, sp: &mut Span) {
+                if let Some(orig_sp) =
+                    source::span_in_doctest_source(*sp, &self.source_map, &self.code_mappings)
+                {
+                    *sp = orig_sp;
+                }
+            }
+        }
+
         let mut collector = DocTestsCollector { tests: Vec::new() };
 
         parsing::find_testable_code(
@@ -114,7 +130,7 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
                 d.config.rust && !d.config.compile_fail && !d.config.standalone_crate
             })
         {
-            let Ok(parse_info) = source::parse_source(
+            let Ok(mut parse_info) = source::parse_source(
                 &collected_doctest.source,
                 &self.ext_cx.sess.psess,
                 &Some(self.crate_name),
@@ -134,6 +150,14 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
             } else {
                 sym::f
             };
+
+            let mut span_adjustor = DocTestSpansAdjustor {
+                source_map: self.ext_cx.source_map(),
+                code_mappings: &collected_doctest.code_mappings,
+            };
+            for stmt in &mut parse_info.stmts {
+                span_adjustor.visit_stmt(stmt);
+            }
 
             let item = mk_unit_test(self, collected_doctest, parse_info, item.span, name);
             let items = AstFragment::Items(smallvec::smallvec![item]);

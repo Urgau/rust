@@ -3608,6 +3608,7 @@ version = "0.0.0"
 dependencies = [
  "bitflags",
  "memchr",
+ "pulldown-cmark",
  "rustc-literal-escaper",
  "rustc_ast_ir",
  "rustc_data_structures",
@@ -4735,7 +4736,6 @@ version = "0.0.0"
 dependencies = [
  "indexmap",
  "itertools",
- "pulldown-cmark",
  "rustc_arena",
  "rustc_ast",
  "rustc_ast_pretty",

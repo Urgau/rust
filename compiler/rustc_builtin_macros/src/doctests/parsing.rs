@@ -178,11 +178,12 @@ fn map_code_block(
         text.push_str(&mapped_line);
         let generated = generated_start..text.len();
 
-        if mapped_line.as_ref() == line
-            && let Some(extra_info) = extra_info
+        let offset = line.len().saturating_sub(mapped_line.len());
+
+        if let Some(extra_info) = extra_info
             && let Some(fragments) = extra_info.fragments
         {
-            let code_line = code_line_start..code_line_start + line.len();
+            let code_line = (code_line_start + offset)..(code_line_start + mapped_line.len());
             if let Some(md_range) = markdown_range_for_code_range(text_events, code_line)
                 && let Some((original, _)) =
                     source_span_for_markdown_range(extra_info.source_map, doc, &md_range, fragments)

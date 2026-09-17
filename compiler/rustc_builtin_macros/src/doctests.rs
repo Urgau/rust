@@ -12,7 +12,9 @@ use rustc_feature::Features;
 use rustc_session::Session;
 use rustc_span::hygiene::{AstPass, Transparency};
 use rustc_span::source_map::SourceMap;
-use rustc_span::{DUMMY_SP, Ident, RemapPathScopeComponents, Span, Symbol, kw, sym};
+use rustc_span::{
+    DUMMY_SP, DesugaringKind, Ident, RemapPathScopeComponents, Span, Symbol, SyntaxContext, kw, sym,
+};
 use thin_vec::{ThinVec, thin_vec};
 use tracing::debug;
 
@@ -99,6 +101,7 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
 
         struct DocTestSpansAdjustor<'doc> {
             source_map: &'doc SourceMap,
+            syntax_context: SyntaxContext,
             code_mappings: &'doc [parsing::CodeLineMapping],
         }
 
@@ -107,7 +110,9 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
                 if let Some(orig_sp) =
                     source::span_in_doctest_source(*sp, &self.source_map, &self.code_mappings)
                 {
-                    *sp = orig_sp;
+                    // we need to apply to syntax context, otherwise the edition is going to revert to
+                    // the global one, not the one specified in the doctest
+                    *sp = orig_sp.with_ctxt(self.syntax_context);
                 }
             }
         }
@@ -130,12 +135,22 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
                 d.config.rust && !d.config.compile_fail && !d.config.standalone_crate
             })
         {
+            let expn_id = self.ext_cx.resolver.expansion_for_desugaring(
+                item.span,
+                collected_doctest.config.edition.unwrap_or(item.span.edition()),
+                DesugaringKind::DocTest,
+                &[],
+            );
+            let syntax_context =
+                SyntaxContext::root().apply_mark(expn_id.to_expn_id(), Transparency::Transparent);
+
             let Ok(mut parse_info) = source::parse_source(
                 &collected_doctest.source,
                 &self.ext_cx.sess.psess,
                 &Some(self.crate_name),
                 None,
                 item.span,
+                syntax_context,
                 &collected_doctest.code_mappings,
             ) else {
                 continue;
@@ -152,6 +167,7 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
             };
 
             let mut span_adjustor = DocTestSpansAdjustor {
+                syntax_context,
                 source_map: self.ext_cx.source_map(),
                 code_mappings: &collected_doctest.code_mappings,
             };
@@ -238,7 +254,7 @@ fn mk_unit_test(
     } else {
         let expn_id = cx.resolver.expansion_for_ast_pass(
             item_span,
-            AstPass::TestHarness,
+            AstPass::DocTests,
             &[],
             Some(exp.parent_node_id),
         );
@@ -274,7 +290,7 @@ fn mk_unit_test(
 
     let expn_id = cx.resolver.expansion_for_ast_pass(
         DUMMY_SP,
-        AstPass::TestHarness,
+        AstPass::DocTests,
         &[sym::test, sym::rustc_attrs, sym::coverage_attribute],
         Some(exp.parent_node_id),
     );

@@ -935,7 +935,8 @@ impl SyntaxContext {
                 | DesugaringKind::WhileLoop
                 | DesugaringKind::OpaqueTy
                 | DesugaringKind::Async
-                | DesugaringKind::Await,
+                | DesugaringKind::Await
+                | DesugaringKind::DocTest,
             ) => false,
             ExpnKind::AstPass(_) | ExpnKind::Desugaring(_) => true, // well, it's "external"
             ExpnKind::Macro(MacroKind::Bang, _) => {
@@ -1189,6 +1190,7 @@ impl MacroKind {
 #[derive(Clone, Copy, Debug, PartialEq, Encodable, Decodable, StableHash)]
 pub enum AstPass {
     StdImports,
+    DocTests,
     TestHarness,
     ProcMacroHarness,
 }
@@ -1197,6 +1199,7 @@ impl AstPass {
     pub fn descr(self) -> &'static str {
         match self {
             AstPass::StdImports => "standard library imports",
+            AstPass::DocTests => "doc tests",
             AstPass::TestHarness => "test harness",
             AstPass::ProcMacroHarness => "proc macro harness",
         }
@@ -1235,6 +1238,8 @@ pub enum DesugaringKind {
         source: bool,
     },
     RangeExpr,
+    /// A documentation test
+    DocTest,
 }
 
 impl DesugaringKind {
@@ -1257,6 +1262,7 @@ impl DesugaringKind {
                 "expression that expanded into a format string literal"
             }
             DesugaringKind::RangeExpr => "range expression",
+            DesugaringKind::DocTest => "documentation test",
         }
     }
 
@@ -1277,6 +1283,7 @@ impl DesugaringKind {
             DesugaringKind::PatTyRange => value == "PatTyRange",
             DesugaringKind::FormatLiteral { .. } => value == "FormatLiteral",
             DesugaringKind::RangeExpr => value == "RangeExpr",
+            DesugaringKind::DocTest => value == "DocTest",
         }
     }
 }

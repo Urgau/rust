@@ -30,7 +30,7 @@ use rustc_session::diagnostics::feature_err;
 use rustc_span::def_id::ModId;
 use rustc_span::edition::Edition;
 use rustc_span::hygiene::{self, AstPass, ExpnData, ExpnKind, LocalExpnId, MacroKind};
-use rustc_span::{DUMMY_SP, Ident, Span, Symbol, kw, sym};
+use rustc_span::{DUMMY_SP, DesugaringKind, Ident, Span, Symbol, kw, sym};
 
 use crate::Namespace::*;
 use crate::def_collector::collect_definitions;
@@ -248,6 +248,30 @@ impl<'ra, 'tcx> ResolverExpand for Resolver<'ra, 'tcx> {
             self.expect_module(mod_id.to_def_id()).expect_local()
         });
         self.ast_transform_scopes.insert(expn_id, parent_scope);
+
+        expn_id
+    }
+
+    fn expansion_for_desugaring(
+        &mut self,
+        call_site: Span,
+        edition: Edition,
+        desugaring: DesugaringKind,
+        features: &[Symbol],
+    ) -> LocalExpnId {
+        let expn_id = self.tcx.with_stable_hashing_context(|hcx| {
+            LocalExpnId::fresh(
+                ExpnData::allow_unstable(
+                    ExpnKind::Desugaring(desugaring),
+                    call_site,
+                    edition,
+                    features.into(),
+                    None,
+                    None,
+                ),
+                hcx,
+            )
+        });
 
         expn_id
     }

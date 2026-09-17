@@ -15,7 +15,7 @@ use rustc_lint_defs::builtin::{
 use rustc_literal_escaper::{EscapeError, Mode, check_for_errors};
 use rustc_session::parse::ParseSess;
 use rustc_span::edition::Edition;
-use rustc_span::{BytePos, Pos, Span, Symbol, sym};
+use rustc_span::{BytePos, Pos, Span, Symbol, SyntaxContext, sym};
 use tracing::debug;
 
 use crate::lexer::diagnostics::TokenTreeDiagInfo;
@@ -63,11 +63,21 @@ pub enum StripTokens {
     Nothing,
 }
 
+/// Which strategy and options to use to create the Spans
+pub(crate) enum SpanStrategy {
+    /// Use the default/root syntax context
+    Default,
+    /// Use a custom syntax context
+    WithContext(SyntaxContext),
+    /// Override with a custom span
+    Override(Span),
+}
+
 pub(crate) fn lex_token_trees<'psess, 'src>(
     psess: &'psess ParseSess,
     mut src: &'src str,
     mut start_pos: BytePos,
-    override_span: Option<Span>,
+    span_strategy: SpanStrategy,
     strip_tokens: StripTokens,
 ) -> Result<TokenStream, Vec<Diag<'psess>>> {
     match strip_tokens {
@@ -92,7 +102,7 @@ pub(crate) fn lex_token_trees<'psess, 'src>(
         pos: start_pos,
         src,
         cursor,
-        override_span,
+        span_strategy,
         nbsp_is_whitespace: false,
         last_lifetime: None,
         token: Token::dummy(),
@@ -131,7 +141,8 @@ struct Lexer<'psess, 'src> {
     src: &'src str,
     /// Cursor for getting lexer tokens.
     cursor: Cursor<'src>,
-    override_span: Option<Span>,
+    /// Options and strategy for creating the spans
+    span_strategy: SpanStrategy,
     /// When a "unknown start of token: \u{a0}" has already been emitted earlier
     /// in this file, it's safe to treat further occurrences of the non-breaking
     /// space character as whitespace.
@@ -153,7 +164,11 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
     }
 
     fn mk_sp(&self, lo: BytePos, hi: BytePos) -> Span {
-        self.override_span.unwrap_or_else(|| Span::with_root_ctxt(lo, hi))
+        match &self.span_strategy {
+            SpanStrategy::Default => Span::with_root_ctxt(lo, hi),
+            SpanStrategy::WithContext(ctxt) => Span::new(lo, hi, *ctxt, None),
+            SpanStrategy::Override(sp) => *sp,
+        }
     }
 
     /// Returns the next token, paired with a bool indicating if the token was

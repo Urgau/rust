@@ -22,7 +22,7 @@ pub use rustc_lexer::UNICODE_VERSION;
 use rustc_session::parse::ParseSess;
 use rustc_span::edit_distance::find_best_match_for_name;
 use rustc_span::source_map::SourceMap;
-use rustc_span::{FileName, SourceFile, Span, Symbol};
+use rustc_span::{FileName, SourceFile, Span, Symbol, SyntaxContext};
 
 pub const MACRO_ARGUMENTS: Option<&str> = Some("macro arguments");
 
@@ -30,7 +30,7 @@ pub const MACRO_ARGUMENTS: Option<&str> = Some("macro arguments");
 pub mod parser;
 use parser::Parser;
 
-use crate::lexer::StripTokens;
+use crate::lexer::{SpanStrategy, StripTokens};
 
 pub mod lexer;
 
@@ -98,7 +98,27 @@ pub fn new_parser_from_source_str(
     strip_tokens: StripTokens,
 ) -> Result<Parser<'_>, Vec<Diag<'_>>> {
     let source_file = psess.source_map().new_source_file(name, source);
-    new_parser_from_source_file(psess, source_file, strip_tokens)
+    new_parser_from_source_file(psess, source_file, strip_tokens, SpanStrategy::Default)
+}
+
+/// Creates a new parser from a source string and a custom syntax context.
+///
+/// On failure, the errors must be consumed via `unwrap_or_emit_fatal`, `emit`, `cancel`,
+/// etc., otherwise a panic will occur when they are dropped.
+pub fn new_parser_from_source_str_with_syntax_context(
+    psess: &ParseSess,
+    name: FileName,
+    source: String,
+    strip_tokens: StripTokens,
+    syntax_context: SyntaxContext,
+) -> Result<Parser<'_>, Vec<Diag<'_>>> {
+    let source_file = psess.source_map().new_source_file(name, source);
+    new_parser_from_source_file(
+        psess,
+        source_file,
+        strip_tokens,
+        SpanStrategy::WithContext(syntax_context),
+    )
 }
 
 /// Creates a new parser from a filename. On failure, the errors must be consumed via
@@ -162,7 +182,7 @@ pub fn new_parser_from_file<'a>(
         }
         err.emit()
     });
-    new_parser_from_source_file(psess, source_file, strip_tokens)
+    new_parser_from_source_file(psess, source_file, strip_tokens, SpanStrategy::Default)
 }
 
 pub fn utf8_error<E: EmissionGuarantee>(
@@ -227,9 +247,10 @@ fn new_parser_from_source_file(
     psess: &ParseSess,
     source_file: Arc<SourceFile>,
     strip_tokens: StripTokens,
+    span_strategy: SpanStrategy,
 ) -> Result<Parser<'_>, Vec<Diag<'_>>> {
     let end_pos = source_file.end_position();
-    let stream = source_file_to_stream(psess, source_file, None, strip_tokens)?;
+    let stream = source_file_to_stream(psess, source_file, span_strategy, strip_tokens)?;
     let mut parser = Parser::new(psess, stream, None);
     if parser.token == token::Eof {
         parser.token.span = Span::new(end_pos, end_pos, parser.token.span.ctxt(), None);
@@ -251,7 +272,12 @@ pub fn source_str_to_stream(
     // in the current edition since that would be breaking.
     // See also <https://github.com/rust-lang/rust/issues/145520>.
     // Alternatively, stop stripping shebangs here, too, if T-lang and crater approve.
-    source_file_to_stream(psess, source_file, override_span, StripTokens::Shebang)
+    source_file_to_stream(
+        psess,
+        source_file,
+        override_span.map_or(SpanStrategy::Default, SpanStrategy::Override),
+        StripTokens::Shebang,
+    )
 }
 
 /// Given a source file, produces a sequence of token trees.
@@ -260,7 +286,7 @@ pub fn source_str_to_stream(
 fn source_file_to_stream<'psess>(
     psess: &'psess ParseSess,
     source_file: Arc<SourceFile>,
-    override_span: Option<Span>,
+    span_strategy: SpanStrategy,
     strip_tokens: StripTokens,
 ) -> Result<TokenStream, Vec<Diag<'psess>>> {
     let src = source_file.src.as_ref().unwrap_or_else(|| {
@@ -270,7 +296,7 @@ fn source_file_to_stream<'psess>(
         ));
     });
 
-    lexer::lex_token_trees(psess, src.as_str(), source_file.start_pos, override_span, strip_tokens)
+    lexer::lex_token_trees(psess, src.as_str(), source_file.start_pos, span_strategy, strip_tokens)
 }
 
 /// Runs the given subparser `f` on the tokens of the given `attr`'s item.
@@ -349,7 +375,13 @@ fn lex_token_trees_for_span(
     span: Span,
 ) -> Option<impl Iterator<Item = TokenTree>> {
     let src = psess.source_map().span_to_snippet(span).ok()?;
-    let stream = match lexer::lex_token_trees(psess, &src, span.lo(), None, StripTokens::Nothing) {
+    let stream = match lexer::lex_token_trees(
+        psess,
+        &src,
+        span.lo(),
+        SpanStrategy::Default,
+        StripTokens::Nothing,
+    ) {
         Ok(stream) => stream,
         Err(errs) => {
             errs.into_iter().for_each(|err| err.cancel());

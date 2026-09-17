@@ -1,19 +1,13 @@
-//use std::io;
-//use std::sync::Arc;
-
 use rustc_ast::token::{Delimiter, TokenKind};
 use rustc_ast::tokenstream::TokenTree;
 use rustc_ast::{self as ast, AttrStyle, HasAttrs, Stmt, StmtKind};
-//use rustc_span::source_map::SourceMap;
 use rustc_errors::DiagCtxtHandle;
-//use rustc_errors::emitter::get_stderr_color_choice;
-//use rustc_errors::{AutoStream, ColorChoice, ColorConfig, DiagCtxtHandle};
 use rustc_parse::lexer::StripTokens;
-use rustc_parse::new_parser_from_source_str;
+use rustc_parse::new_parser_from_source_str_with_syntax_context;
 use rustc_session::parse::ParseSess;
 use rustc_span::source_map::SourceMap;
 use rustc_span::symbol::sym;
-use rustc_span::{FileName, InnerSpan, Span, Symbol, kw};
+use rustc_span::{FileName, InnerSpan, Span, Symbol, SyntaxContext, kw};
 use thin_vec::ThinVec;
 
 use crate::doctests::parsing::CodeLineMapping;
@@ -43,12 +37,9 @@ pub(super) fn parse_source(
     crate_name: &Option<Symbol>,
     parent_dcx: Option<DiagCtxtHandle<'_>>,
     span: Span,
+    syntax_context: SyntaxContext,
     code_mappings: &[CodeLineMapping],
 ) -> Result<ParseSourceInfo, ()> {
-    //use rustc_errors::DiagCtxt;
-    //use rustc_errors::annotate_snippet_emitter_writer::AnnotateSnippetEmitter;
-    //use rustc_span::source_map::FilePathMapping;
-
     let mut info =
         ParseSourceInfo { already_has_extern_crate: crate_name.is_none(), ..Default::default() };
 
@@ -56,31 +47,21 @@ pub(super) fn parse_source(
 
     let filename = FileName::anon_source_code(&wrapped_source);
 
-    /*let sm = Arc::new(SourceMap::new(FilePathMapping::empty()));
-    let supports_color = match get_stderr_color_choice(ColorConfig::Auto, &std::io::stderr()) {
-        ColorChoice::Auto => unreachable!(),
-        ColorChoice::AlwaysAnsi | ColorChoice::Always => true,
-        ColorChoice::Never => false,
-    };
-    info.supports_color = supports_color;
-    // Any errors in parsing should also appear when the doctest is compiled for real, so just
-    // send all the errors that the parser emits directly into a `Sink` instead of stderr.
-    let emitter = AnnotateSnippetEmitter::new(AutoStream::never(Box::new(io::sink())));
-
-    // FIXME(misdreavus): pass `-Z treat-err-as-bug` to the doctest parser
-    let dcx = DiagCtxt::new(Box::new(emitter)).disable_warnings();
-    let psess = ParseSess::with_dcx(dcx, sm);*/
-
     // Don't strip any tokens; it wouldn't matter anyway because the source is wrapped in a function.
-    let mut parser =
-        match new_parser_from_source_str(psess, filename, wrapped_source, StripTokens::Nothing) {
-            Ok(p) => p,
-            Err(errs) => {
-                errs.into_iter().for_each(|err| err.cancel());
-                //reset_error_count(&psess);
-                return Err(());
-            }
-        };
+    let mut parser = match new_parser_from_source_str_with_syntax_context(
+        psess,
+        filename,
+        wrapped_source,
+        StripTokens::Nothing,
+        syntax_context,
+    ) {
+        Ok(p) => p,
+        Err(errs) => {
+            errs.into_iter().for_each(|err| err.cancel());
+            //reset_error_count(&psess);
+            return Err(());
+        }
+    };
 
     fn push_to_s(s: &mut String, source: &str, span: rustc_span::Span, prev_span_hi: &mut usize) {
         let extra_len = DOCTEST_CODE_WRAPPER.len();
@@ -129,14 +110,6 @@ pub(super) fn parse_source(
         }
         is_extern_crate
     }
-
-    /*fn reset_error_count(psess: &ParseSess) {
-        // Reset errors so that they won't be reported as compiler bugs when dropping the
-        // dcx. Any errors in the tests will be reported when the test file is compiled,
-        // Note that we still need to cancel the errors above otherwise `Diag` will panic on
-        // drop.
-        psess.dcx().reset_err_count();
-    }*/
 
     let mut prev_span_hi = 0;
     let not_crate_attrs = &[sym::forbid, sym::allow, sym::warn, sym::deny, sym::expect];

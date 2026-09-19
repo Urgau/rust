@@ -275,6 +275,7 @@ fn mk_decls(cx: &mut ExtCtxt<'_>, macros: &[ProcMacro]) -> Box<ast::Item> {
     let expn_id = cx.resolver.expansion_for_ast_pass(
         DUMMY_SP,
         AstPass::ProcMacroHarness,
+        None,
         &[sym::rustc_attrs, sym::proc_macro_internals],
         None,
     );

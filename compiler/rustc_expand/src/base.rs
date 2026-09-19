@@ -24,7 +24,7 @@ use rustc_span::def_id::{CrateNum, DefId, LocalDefId, ModId};
 use rustc_span::edition::Edition;
 use rustc_span::hygiene::{AstPass, ExpnData, ExpnKind, LocalExpnId, MacroKind};
 use rustc_span::source_map::SourceMap;
-use rustc_span::{DUMMY_SP, DesugaringKind, Ident, Span, Symbol, kw};
+use rustc_span::{DUMMY_SP, Ident, Span, Symbol, kw};
 use rustc_structures::{CollapseMacroDebuginfo, Limit};
 use smallvec::{SmallVec, smallvec};
 use thin_vec::ThinVec;
@@ -1045,16 +1045,9 @@ pub trait ResolverExpand {
         &mut self,
         call_site: Span,
         pass: AstPass,
+        edition: Option<Edition>,
         features: &[Symbol],
         parent_module_id: Option<NodeId>,
-    ) -> LocalExpnId;
-
-    fn expansion_for_desugaring(
-        &mut self,
-        call_site: Span,
-        edition: Edition,
-        pass: DesugaringKind,
-        features: &[Symbol],
     ) -> LocalExpnId;
 
     fn resolve_imports(&mut self);

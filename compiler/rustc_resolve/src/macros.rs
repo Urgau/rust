@@ -30,7 +30,7 @@ use rustc_session::diagnostics::feature_err;
 use rustc_span::def_id::ModId;
 use rustc_span::edition::Edition;
 use rustc_span::hygiene::{self, AstPass, ExpnData, ExpnKind, LocalExpnId, MacroKind};
-use rustc_span::{DUMMY_SP, DesugaringKind, Ident, Span, Symbol, kw, sym};
+use rustc_span::{DUMMY_SP, Ident, Span, Symbol, kw, sym};
 
 use crate::Namespace::*;
 use crate::def_collector::collect_definitions;
@@ -225,6 +225,7 @@ impl<'ra, 'tcx> ResolverExpand for Resolver<'ra, 'tcx> {
         &mut self,
         call_site: Span,
         pass: AstPass,
+        edition: Option<Edition>,
         features: &[Symbol],
         parent_module_id: Option<NodeId>,
     ) -> LocalExpnId {
@@ -235,7 +236,7 @@ impl<'ra, 'tcx> ResolverExpand for Resolver<'ra, 'tcx> {
                 ExpnData::allow_unstable(
                     ExpnKind::AstPass(pass),
                     call_site,
-                    self.tcx.sess.edition(),
+                    edition.unwrap_or(self.tcx.sess.edition()),
                     features.into(),
                     None,
                     parent_module,
@@ -249,29 +250,23 @@ impl<'ra, 'tcx> ResolverExpand for Resolver<'ra, 'tcx> {
         });
         self.ast_transform_scopes.insert(expn_id, parent_scope);
 
-        expn_id
-    }
-
-    fn expansion_for_desugaring(
-        &mut self,
-        call_site: Span,
-        edition: Edition,
-        desugaring: DesugaringKind,
-        features: &[Symbol],
-    ) -> LocalExpnId {
-        let expn_id = self.tcx.with_stable_hashing_context(|hcx| {
-            LocalExpnId::fresh(
-                ExpnData::allow_unstable(
-                    ExpnKind::Desugaring(desugaring),
-                    call_site,
-                    edition,
-                    features.into(),
-                    None,
-                    None,
-                ),
-                hcx,
-            )
-        });
+        if let Some(module_id) = parent_module_id {
+            // scope *at the invocation site*; `visit_ast_fragment_with_placeholders`
+            // overrides `.expansion` itself
+            self.invocation_parent_scopes
+                .insert(expn_id, ParentScope::module(parent_scope /* as Module */, self.arenas));
+            // what DefCollector uses as the parent def for items in this expansion
+            self.invocation_parents.insert(
+                expn_id,
+                InvocationParent {
+                    parent_def: self.owner_def_id(module_id),
+                    // same values a normal item-position invocation gets
+                    impl_trait_context: crate::ImplTraitContext::Existential,
+                    in_attr: false,
+                    owner: module_id,
+                },
+            );
+        }
 
         expn_id
     }

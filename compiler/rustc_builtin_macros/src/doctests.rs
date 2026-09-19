@@ -5,16 +5,13 @@ use std::{iter, mem};
 use rustc_ast as ast;
 use rustc_ast::mut_visit::*;
 use rustc_ast::{ModKind, NodeId, join_path_idents};
-use rustc_ast_pretty::pprust;
 use rustc_expand::base::{ExtCtxt, ResolverExpand};
 use rustc_expand::expand::{AstFragment, ExpansionConfig};
 use rustc_feature::Features;
 use rustc_session::Session;
 use rustc_span::hygiene::{AstPass, Transparency};
 use rustc_span::source_map::SourceMap;
-use rustc_span::{
-    DUMMY_SP, DesugaringKind, Ident, RemapPathScopeComponents, Span, Symbol, SyntaxContext, kw, sym,
-};
+use rustc_span::{DUMMY_SP, Ident, RemapPathScopeComponents, Span, Symbol, SyntaxContext, kw, sym};
 use thin_vec::{ThinVec, thin_vec};
 use tracing::debug;
 
@@ -135,14 +132,15 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
                 d.config.rust && !d.config.compile_fail && !d.config.standalone_crate
             })
         {
-            let expn_id = self.ext_cx.resolver.expansion_for_desugaring(
+            let expn_id = self.ext_cx.resolver.expansion_for_ast_pass(
                 item.span,
-                collected_doctest.config.edition.unwrap_or(item.span.edition()),
-                DesugaringKind::DocTest,
+                AstPass::DocTests,
+                Some(collected_doctest.config.edition.unwrap_or(item.span.edition())),
                 &[],
+                Some(self.parent_node_id),
             );
             let syntax_context =
-                SyntaxContext::root().apply_mark(expn_id.to_expn_id(), Transparency::Transparent);
+                SyntaxContext::root().apply_mark(expn_id.to_expn_id(), Transparency::Opaque);
 
             let Ok(mut parse_info) = source::parse_source(
                 &collected_doctest.source,
@@ -175,9 +173,13 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
                 span_adjustor.visit_stmt(stmt);
             }
 
-            let item = mk_unit_test(self, collected_doctest, parse_info, item.span, name);
-            let items = AstFragment::Items(smallvec::smallvec![item]);
+            let items = mk_unit_test(self, collected_doctest, parse_info, item.span, name);
+            let items = AstFragment::Items(items.into_iter().collect());
+
+            let prev = mem::replace(&mut self.ext_cx.current_expansion.id, expn_id);
             let items = self.ext_cx.monotonic_expander().fully_expand_fragment(items).make_items();
+            self.ext_cx.current_expansion.id = prev;
+
             self.expanded_doctests.extend(items);
         }
 
@@ -189,7 +191,7 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
             ModKind::Loaded(.., ast::ModSpans { inner_span: _span, .. }),
         ) = item.kind
         {
-            //let prev_tests = mem::take(&mut self.expanded_doctests);
+            let prev_tests = mem::take(&mut self.expanded_doctests);
             let prev_parent_node_id = mem::replace(&mut self.parent_node_id, item.id);
             self.mod_path.push(mod_ident.clone());
 
@@ -198,14 +200,10 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
             self.mod_path.pop();
             self.parent_node_id = prev_parent_node_id;
 
-            /*
-            TODO: we can't just add the doctests here, we need tell the resolver that we are
-            adding the items here, figure-out how, otherwise all the imports are messed-up
             let mut doctests = mem::replace(&mut self.expanded_doctests, prev_tests);
             if let ast::ItemKind::Mod(_, _, ModKind::Loaded(ref mut items, _, _)) = item.kind {
                 items.extend(doctests.drain(..));
             }
-            */
         } /* else {
         // But in those cases, we emit a lint to warn the user of these missing tests.
         ast::visit::walk_item(&mut InnerItemLinter { sess: self.cx.ext_cx.sess }, item);
@@ -219,7 +217,7 @@ fn mk_unit_test(
     parse_info: ParseSourceInfo,
     item_span: Span,
     doctest_name: Symbol,
-) -> Box<ast::Item> {
+) -> ThinVec<Box<ast::Item>> {
     let cx = &mut exp.ext_cx;
 
     let mut doctest_mod_items = ThinVec::new();
@@ -252,14 +250,16 @@ fn mk_unit_test(
 
         Ident::new(sym::main, item_span)
     } else {
-        let expn_id = cx.resolver.expansion_for_ast_pass(
+        let doctest_expn_id = cx.resolver.expansion_for_ast_pass(
             item_span,
             AstPass::DocTests,
+            None,
             &[],
             Some(exp.parent_node_id),
         );
 
-        let entrypoint_sp = item_span.apply_mark(expn_id.to_expn_id(), Transparency::Opaque);
+        let entrypoint_sp =
+            item_span.apply_mark(doctest_expn_id.to_expn_id(), Transparency::Opaque);
 
         // creates fn() -> ()
         let ret_ty = cx.ty(entrypoint_sp, ast::TyKind::Tup(ThinVec::new()));
@@ -267,7 +267,7 @@ fn mk_unit_test(
         let sig = ast::FnSig { decl, header: ast::FnHeader::default(), span: entrypoint_sp };
 
         // creates fn doctest() -> () { ... }
-        let entrypoint_ident = Ident::new(sym::doctest, entrypoint_sp);
+        let entrypoint_ident = Ident::new(sym::div, entrypoint_sp);
         let entrypoint = cx.item(
             entrypoint_sp,
             ast::AttrVec::new(),
@@ -291,6 +291,7 @@ fn mk_unit_test(
     let expn_id = cx.resolver.expansion_for_ast_pass(
         DUMMY_SP,
         AstPass::DocTests,
+        None,
         &[sym::test, sym::rustc_attrs, sym::coverage_attribute],
         Some(exp.parent_node_id),
     );
@@ -397,7 +398,10 @@ fn mk_unit_test(
         ast::ItemKind::Const(
             ast::ConstItem {
                 defaultness: ast::Defaultness::Implicit,
-                ident: Ident::new(doctest_entry_point_ident.name, sp),
+                ident: Ident::new(
+                    Symbol::intern(&format!("{}_c", doctest_entry_point_ident.name.as_str())),
+                    sp,
+                ),
                 generics: ast::Generics::default(),
                 ty: cx.ty(sp, ast::TyKind::Path(None, test_path("TestDescAndFn"))),
                 define_opaque: None,
@@ -501,22 +505,7 @@ fn mk_unit_test(
     // The generated test case
     doctest_mod_items.push(test_const);
 
-    let mod_ = cx.item(
-        sp,
-        ast::AttrVec::new(),
-        ast::ItemKind::Mod(
-            rustc_ast::Safety::Default,
-            Ident::new(sym::doctest, sp),
-            ast::ModKind::Loaded(
-                doctest_mod_items,
-                ast::Inline::Yes,
-                ast::ModSpans { inner_span: sp, inject_use_span: sp },
-            ),
-        ),
-    );
-
-    debug!("synthetic test extern:\n{}\n", pprust::item_to_string(&mod_));
-    mod_
+    doctest_mod_items
 }
 
 fn item_path(mod_path: &[Ident], item_ident: &Ident) -> String {

@@ -940,8 +940,7 @@ impl SyntaxContext {
                 | DesugaringKind::WhileLoop
                 | DesugaringKind::OpaqueTy
                 | DesugaringKind::Async
-                | DesugaringKind::Await
-                | DesugaringKind::DocTest,
+                | DesugaringKind::Await,
             ) => false,
             ExpnKind::AstPass(_) | ExpnKind::Desugaring(_) => true, // well, it's "external"
             ExpnKind::Macro(MacroKind::Bang, _) => {
@@ -1243,8 +1242,6 @@ pub enum DesugaringKind {
         source: bool,
     },
     RangeExpr,
-    /// A documentation test
-    DocTest,
 }
 
 impl DesugaringKind {
@@ -1267,7 +1264,6 @@ impl DesugaringKind {
                 "expression that expanded into a format string literal"
             }
             DesugaringKind::RangeExpr => "range expression",
-            DesugaringKind::DocTest => "documentation test",
         }
     }
 
@@ -1288,7 +1284,6 @@ impl DesugaringKind {
             DesugaringKind::PatTyRange => value == "PatTyRange",
             DesugaringKind::FormatLiteral { .. } => value == "FormatLiteral",
             DesugaringKind::RangeExpr => value == "RangeExpr",
-            DesugaringKind::DocTest => value == "DocTest",
         }
     }
 }

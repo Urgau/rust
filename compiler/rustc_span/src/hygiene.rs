@@ -946,7 +946,8 @@ impl SyntaxContext {
                 | DesugaringKind::OpaqueTy
                 | DesugaringKind::Async
                 | DesugaringKind::Await,
-            ) => false,
+            )
+            | ExpnKind::AstPass(AstPass::DocTests) => false,
             ExpnKind::AstPass(_) | ExpnKind::Desugaring(_) => true, // well, it's "external"
             ExpnKind::Macro(MacroKind::Bang, _) => {
                 // Dummy span for the `def_site` means it's an external macro.

@@ -276,66 +276,54 @@ fn mk_unit_test(
         doctest_mod_items.push(extern_crate_self);
     }
 
-    let doctest_entry_point_ident = if parse_info.has_main_fn {
-        for stmt in parse_info.stmts {
-            match stmt.kind {
-                ast::StmtKind::Item(item) => {
-                    doctest_mod_items.push(item);
-                }
-                ast::StmtKind::MacCall(mac_stmt) => {
-                    let item =
-                        cx.item(item_span, mac_stmt.attrs, ast::ItemKind::MacCall(mac_stmt.mac));
+    let mut attrs = parse_info.attrs;
+    for attr in &mut attrs {
+        attr.style = rustc_ast::AttrStyle::Inner;
+    }
 
-                    doctest_mod_items.push(item);
-                }
-                _ => unreachable!(),
-            }
-        }
+    let doctest_expn_id = cx.resolver.expansion_for_ast_pass(
+        item_span,
+        AstPass::DocTests,
+        None,
+        &[],
+        Some(exp.parent_node_id),
+    );
 
-        Ident::new(sym::main, item_span)
-    } else {
-        let doctest_expn_id = cx.resolver.expansion_for_ast_pass(
-            item_span,
-            AstPass::DocTests,
-            None,
-            &[],
-            Some(exp.parent_node_id),
-        );
+    let entrypoint_sp = item_span.apply_mark(doctest_expn_id.to_expn_id(), Transparency::Opaque);
 
-        let mut attrs = parse_info.attrs;
-        for attr in &mut attrs {
-            attr.style = rustc_ast::AttrStyle::Inner;
-        }
+    // creates fn() -> ()
+    let ret_ty = cx.ty(entrypoint_sp, ast::TyKind::Tup(ThinVec::new()));
+    let decl = cx.fn_decl(ThinVec::new(), ast::FnRetTy::Ty(ret_ty));
+    let sig = ast::FnSig { decl, header: ast::FnHeader::default(), span: entrypoint_sp };
 
-        let entrypoint_sp =
-            item_span.apply_mark(doctest_expn_id.to_expn_id(), Transparency::Opaque);
+    let mut stmts = parse_info.stmts;
+    if parse_info.has_main_fn {
+        let main_ident =
+            Ident::new(sym::main, item_span.with_ctxt(syntax_context_inside_the_generated_code));
 
-        // creates fn() -> ()
-        let ret_ty = cx.ty(entrypoint_sp, ast::TyKind::Tup(ThinVec::new()));
-        let decl = cx.fn_decl(ThinVec::new(), ast::FnRetTy::Ty(ret_ty));
-        let sig = ast::FnSig { decl, header: ast::FnHeader::default(), span: entrypoint_sp };
+        // creates main()
+        let call = cx.expr_call_ident(entrypoint_sp, main_ident, ThinVec::new());
+        stmts.push(cx.stmt_expr(call));
+    }
 
-        // creates fn <name>_doctest() -> () { ... }
-        let entrypoint_ident = Ident::new(doctest_name, entrypoint_sp);
-        let entrypoint = cx.item(
-            entrypoint_sp,
-            attrs,
-            ast::ItemKind::Fn(Box::new(ast::Fn {
-                defaultness: ast::Defaultness::Implicit,
-                ident: entrypoint_ident,
-                generics: ast::Generics::default(),
-                contract: None,
-                define_opaque: None,
-                eii_impl: None,
-                sig,
-                body: Some(cx.block(entrypoint_sp, parse_info.stmts)),
-            })),
-        );
+    // creates fn <name>_doctest() -> () { ... }
+    let entrypoint_ident = Ident::new(doctest_name, entrypoint_sp);
+    let entrypoint = cx.item(
+        entrypoint_sp,
+        attrs,
+        ast::ItemKind::Fn(Box::new(ast::Fn {
+            defaultness: ast::Defaultness::Implicit,
+            ident: entrypoint_ident,
+            generics: ast::Generics::default(),
+            contract: None,
+            define_opaque: None,
+            eii_impl: None,
+            sig,
+            body: Some(cx.block(entrypoint_sp, stmts)),
+        })),
+    );
 
-        doctest_mod_items.push(entrypoint);
-
-        entrypoint_ident
-    };
+    doctest_mod_items.push(entrypoint);
 
     let expn_id = cx.resolver.expansion_for_ast_pass(
         DUMMY_SP,
@@ -419,7 +407,7 @@ fn mk_unit_test(
                         // $test_fn()
                         cx.expr_call(
                             ret_ty_sp,
-                            cx.expr_path(cx.path(sp, vec![doctest_entry_point_ident])),
+                            cx.expr_path(cx.path(sp, vec![entrypoint_ident])),
                             ThinVec::new(),
                         ), // )
                     ],
@@ -448,7 +436,7 @@ fn mk_unit_test(
             ast::ConstItem {
                 defaultness: ast::Defaultness::Implicit,
                 ident: Ident::new(
-                    Symbol::intern(&doctest_entry_point_ident.name.as_str().to_ascii_uppercase()),
+                    Symbol::intern(&entrypoint_ident.name.as_str().to_ascii_uppercase()),
                     sp,
                 ),
                 generics: ast::Generics::default(),

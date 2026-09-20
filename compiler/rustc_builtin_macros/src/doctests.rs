@@ -38,6 +38,7 @@ pub fn expand_doctests(
         ext_cx,
         crate_name,
         expanded_doctests: Vec::new(),
+        expanded_doctests_crate: Vec::new(),
         mod_path: Vec::new(),
         parent_node_id: ast::CRATE_NODE_ID,
     }
@@ -48,6 +49,7 @@ struct DocTestsExpander<'a> {
     ext_cx: ExtCtxt<'a>,
     crate_name: Symbol,
     expanded_doctests: Vec<Box<ast::Item>>,
+    expanded_doctests_crate: Vec<Box<ast::Item>>,
     mod_path: Vec<Ident>,
     parent_node_id: NodeId,
 }
@@ -55,7 +57,6 @@ struct DocTestsExpander<'a> {
 struct CollectedDocTest {
     source: String,
     config: parsing::LangString,
-    #[allow(dead_code)]
     rel_line: parsing::MdRelLine,
     code_mappings: Vec<parsing::CodeLineMapping>,
 }
@@ -68,6 +69,7 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
 
         let mut doctests = mem::replace(&mut self.expanded_doctests, prev_tests);
         c.items.extend(doctests.drain(..));
+        c.items.extend(self.expanded_doctests_crate.drain(..));
     }
 
     fn visit_item(&mut self, item: &mut ast::Item) {
@@ -130,7 +132,7 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
 
         for collected_doctest in collector.tests.into_iter().filter(|d| {
             // don't take into account non-Rust doctests, as well as compile_fail and standalone ones
-            d.config.rust && !d.config.compile_fail && !d.config.standalone_crate
+            d.config.rust && !d.config.compile_fail /* && !d.config.standalone_crate*/
         }) {
             let expn_id = self.ext_cx.resolver.expansion_for_ast_pass(
                 item.span,
@@ -190,14 +192,31 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
                 span_adjustor.visit_attribute(attr);
             }
 
-            let items = mk_unit_test(self, collected_doctest, parse_info, item.span, name);
+            // HACK: we use standalone_crate to mean that it's a private doctest, change it before shipping it
+            let expand_at_site = !collected_doctest.config.standalone_crate;
+
+            let items = mk_unit_test(
+                self,
+                collected_doctest,
+                parse_info,
+                item.span,
+                name,
+                expand_at_site,
+                syntax_context,
+            );
             let items = AstFragment::Items(items.into_iter().collect());
 
-            let prev = mem::replace(&mut self.ext_cx.current_expansion.id, expn_id);
-            let items = self.ext_cx.monotonic_expander().fully_expand_fragment(items).make_items();
-            self.ext_cx.current_expansion.id = prev;
-
-            self.expanded_doctests.extend(items);
+            if expand_at_site {
+                let prev = mem::replace(&mut self.ext_cx.current_expansion.id, expn_id);
+                let items =
+                    self.ext_cx.monotonic_expander().fully_expand_fragment(items).make_items();
+                self.ext_cx.current_expansion.id = prev;
+                self.expanded_doctests.extend(items);
+            } else {
+                let items =
+                    self.ext_cx.monotonic_expander().fully_expand_fragment(items).make_items();
+                self.expanded_doctests_crate.extend(items);
+            }
         }
 
         // We don't want to recurse into anything other than mods, since
@@ -234,16 +253,24 @@ fn mk_unit_test(
     parse_info: ParseSourceInfo,
     item_span: Span,
     doctest_name: Symbol,
+    expand_at_side: bool,
+    syntax_context_inside_the_generated_code: SyntaxContext,
 ) -> ThinVec<Box<ast::Item>> {
     let cx = &mut exp.ext_cx;
 
     let mut doctest_mod_items = ThinVec::new();
 
-    if !parse_info.already_has_extern_crate {
+    if !parse_info.already_has_extern_crate && !expand_at_side {
         let extern_crate_self = cx.item(
             item_span,
             ast::AttrVec::new(),
-            ast::ItemKind::ExternCrate(Some(kw::SelfLower), Ident::new(exp.crate_name, item_span)),
+            ast::ItemKind::ExternCrate(
+                Some(kw::SelfLower),
+                Ident::new(
+                    exp.crate_name,
+                    item_span.with_ctxt(syntax_context_inside_the_generated_code),
+                ),
+            ),
         );
 
         doctest_mod_items.push(extern_crate_self);
@@ -527,7 +554,25 @@ fn mk_unit_test(
     // The generated test case
     doctest_mod_items.push(test_const);
 
-    doctest_mod_items
+    if expand_at_side {
+        doctest_mod_items
+    } else {
+        let mod_ = cx.item(
+            sp,
+            ast::AttrVec::new(),
+            ast::ItemKind::Mod(
+                rustc_ast::Safety::Default,
+                Ident::new(sym::doctest, sp),
+                ast::ModKind::Loaded(
+                    doctest_mod_items,
+                    ast::Inline::Yes,
+                    ast::ModSpans { inner_span: sp, inject_use_span: sp },
+                ),
+            ),
+        );
+
+        thin_vec![mod_]
+    }
 }
 
 fn item_path(mod_path: &[Ident], item_ident: &Ident) -> String {

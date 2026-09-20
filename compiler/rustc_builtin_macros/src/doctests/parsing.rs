@@ -65,7 +65,7 @@ impl MdRelLine {
     }
 
     /// See struct docs.
-    pub(crate) const fn offset(self) -> usize {
+    pub(crate) const fn offset(&self) -> usize {
         self.offset
     }
 }

@@ -22,11 +22,7 @@ pub(super) struct ParseSourceInfo {
     pub(super) has_macro_def: bool,
     pub(super) everything_else: String,
     pub(super) crates: String,
-    /// Inner attributes (`#![...]`) from the source that have to be put at the crate level.
-    pub(super) crate_attrs: ast::AttrVec,
-    /// Inner attributes (`#![...]`) from the source that can be put into a module and therefore do
-    /// not inhibit merging: even in the merged test, the attributes can be isolated to the test.
-    pub(super) module_attrs: ast::AttrVec,
+    pub(super) attrs: ast::AttrVec,
 }
 
 const DOCTEST_CODE_WRAPPER: &str = "fn f(){\n";
@@ -112,7 +108,6 @@ pub(super) fn parse_source(
     }
 
     let mut prev_span_hi = 0;
-    let not_crate_attrs = &[sym::forbid, sym::allow, sym::warn, sym::deny, sym::expect];
     let parsed = parser.parse_item(
         rustc_parse::parser::ForceCollect::No,
         rustc_parse::parser::AllowConstBlockItems::No,
@@ -124,26 +119,7 @@ pub(super) fn parse_source(
             kind: ast::ItemKind::Fn(ast::Fn { body: Some(body), .. }),
             ..
         })) => {
-            for attr in attrs {
-                if attr.style == AttrStyle::Outer || attr.has_any_name(not_crate_attrs) {
-                    // There is one exception to these attributes:
-                    // `#![allow(internal_features)]`. If this attribute is used, we need to
-                    // consider it only as a crate-level attribute.
-                    if attr.has_name(sym::allow)
-                        && let Some(list) = attr.meta_item_list()
-                        && list.iter().any(|sub_attr| {
-                            sub_attr.has_name(sym::internal_features)
-                                || sub_attr.has_name(sym::incomplete_features)
-                        })
-                    {
-                        info.crate_attrs.push(attr);
-                    } else {
-                        info.module_attrs.push(attr);
-                    }
-                } else {
-                    info.crate_attrs.push(attr);
-                }
-            }
+            info.attrs = attrs;
             let mut has_non_items = false;
             let mut first_non_item_span = None;
             for stmt in &body.stmts {
@@ -199,9 +175,7 @@ pub(super) fn parse_source(
                 {
                     span = span.with_lo(attr.span.lo());
                 }
-                if info.everything_else.is_empty()
-                    && (!info.module_attrs.is_empty() || !info.crate_attrs.is_empty())
-                {
+                if info.everything_else.is_empty() && !info.attrs.is_empty() {
                     // To keep the doctest code "as close as possible" to the original, we insert
                     // all the code located between this new span and the previous span which
                     // might contain code comments and backlines.

@@ -25,6 +25,7 @@ use crate::diagnostics::ParsedDescription;
 use crate::generated::GeneratedAttrState;
 use crate::parser::{AllowExprMetavar, ArgParser, PathParser, RefPathParser};
 use crate::synthetic::SyntheticAttrState;
+use crate::target_checking::AllowedTargets;
 use crate::validate_attr::parse_meta;
 use crate::{AttributeTemplate, ShouldEmit, diagnostics};
 
@@ -671,5 +672,15 @@ impl<'sess> AttributeParser<'sess> {
                 AttrArgs::Eq { eq_span: lower_span(*eq_span), expr: lit }
             }
         }
+    }
+}
+
+impl AttributeParser<'_> {
+    pub fn is_maybe_allowed_at_level(a: &ast::Attribute, target: Target) -> Option<bool> {
+        let allowed_targets = &ATTRIBUTE_PARSERS.accepters.get(&*a.path())?.allowed_targets;
+        if let AllowedTargets::ManuallyChecked = allowed_targets {
+            return None;
+        }
+        Some(allowed_targets.allowed_targets().contains(&target))
     }
 }

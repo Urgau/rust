@@ -5,6 +5,8 @@ use std::{iter, mem};
 use rustc_ast as ast;
 use rustc_ast::mut_visit::*;
 use rustc_ast::{ModKind, NodeId, join_path_idents};
+use rustc_attr_ir::target::Target;
+use rustc_attr_parsing::AttributeParser;
 use rustc_expand::base::{ExtCtxt, ResolverExpand};
 use rustc_expand::expand::{AstFragment, ExpansionConfig};
 use rustc_feature::Features;
@@ -126,12 +128,10 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
         let has_more_than_one = collector.tests.len() > 1;
         let item_ident = item.kind.ident();
 
-        for (doctest_i, collected_doctest) in
-            collector.tests.into_iter().enumerate().filter(|(_, d)| {
-                // don't take into account non-Rust doctests, as well as compile_fail and standalone ones
-                d.config.rust && !d.config.compile_fail && !d.config.standalone_crate
-            })
-        {
+        for collected_doctest in collector.tests.into_iter().filter(|d| {
+            // don't take into account non-Rust doctests, as well as compile_fail and standalone ones
+            d.config.rust && !d.config.compile_fail && !d.config.standalone_crate
+        }) {
             let expn_id = self.ext_cx.resolver.expansion_for_ast_pass(
                 item.span,
                 AstPass::DocTests,
@@ -154,16 +154,30 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
                 continue;
             };
 
+            let has_incompatible_fn_attrs = parse_info.attrs.iter().any(|attr| {
+                AttributeParser::is_maybe_allowed_at_level(attr, Target::Fn) != Some(true)
+                    && ![sym::allow, sym::deny, sym::warn, sym::forbid].contains(&attr.path()[0])
+            });
+            if has_incompatible_fn_attrs {
+                continue;
+            }
+
             let name = if let Some(ident) = &item_ident {
                 if has_more_than_one {
-                    Symbol::intern(&format!("{}_{doctest_i}", ident.name.as_str()))
+                    Symbol::intern(&format!(
+                        "{}_{}",
+                        ident.name.as_str(),
+                        collected_doctest.rel_line.offset()
+                    ))
                 } else {
-                    ident.name
+                    Symbol::intern(&format!("{}", ident.name.as_str()))
                 }
             } else {
                 sym::f
             };
 
+            // This unfortunatly doesn't take into account macros input (like LazyAttrTokenStream)
+            // we either need a new system or make the parsing create the right span from the start
             let mut span_adjustor = DocTestSpansAdjustor {
                 syntax_context,
                 source_map: self.ext_cx.source_map(),
@@ -171,6 +185,9 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
             };
             for stmt in &mut parse_info.stmts {
                 span_adjustor.visit_stmt(stmt);
+            }
+            for attr in &mut parse_info.attrs {
+                span_adjustor.visit_attribute(attr);
             }
 
             let items = mk_unit_test(self, collected_doctest, parse_info, item.span, name);
@@ -258,6 +275,11 @@ fn mk_unit_test(
             Some(exp.parent_node_id),
         );
 
+        let mut attrs = parse_info.attrs;
+        for attr in &mut attrs {
+            attr.style = rustc_ast::AttrStyle::Inner;
+        }
+
         let entrypoint_sp =
             item_span.apply_mark(doctest_expn_id.to_expn_id(), Transparency::Opaque);
 
@@ -266,11 +288,11 @@ fn mk_unit_test(
         let decl = cx.fn_decl(ThinVec::new(), ast::FnRetTy::Ty(ret_ty));
         let sig = ast::FnSig { decl, header: ast::FnHeader::default(), span: entrypoint_sp };
 
-        // creates fn doctest() -> () { ... }
-        let entrypoint_ident = Ident::new(sym::div, entrypoint_sp);
+        // creates fn <name>_doctest() -> () { ... }
+        let entrypoint_ident = Ident::new(doctest_name, entrypoint_sp);
         let entrypoint = cx.item(
             entrypoint_sp,
-            ast::AttrVec::new(),
+            attrs,
             ast::ItemKind::Fn(Box::new(ast::Fn {
                 defaultness: ast::Defaultness::Implicit,
                 ident: entrypoint_ident,
@@ -399,7 +421,7 @@ fn mk_unit_test(
             ast::ConstItem {
                 defaultness: ast::Defaultness::Implicit,
                 ident: Ident::new(
-                    Symbol::intern(&format!("{}_c", doctest_entry_point_ident.name.as_str())),
+                    Symbol::intern(&doctest_entry_point_ident.name.as_str().to_ascii_uppercase()),
                     sp,
                 ),
                 generics: ast::Generics::default(),

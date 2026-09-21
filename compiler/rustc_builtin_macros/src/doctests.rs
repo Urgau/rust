@@ -509,10 +509,7 @@ fn mk_unit_test(
                                             ))
                                         ),
                                         // test_type: ...
-                                        field(
-                                            "test_type",
-                                            cx.expr_path(test_type_path("UnitTest"))
-                                        ),
+                                        field("test_type", cx.expr_path(test_type_path("DocTest"))),
                                         // },
                                     ],
                                 ),

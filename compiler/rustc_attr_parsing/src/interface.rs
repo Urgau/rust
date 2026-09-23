@@ -25,7 +25,7 @@ use crate::diagnostics::ParsedDescription;
 use crate::generated::GeneratedAttrState;
 use crate::parser::{AllowExprMetavar, ArgParser, PathParser, RefPathParser};
 use crate::synthetic::SyntheticAttrState;
-use crate::target_checking::AllowedTargets;
+use crate::target_checking::{AllowedResult, AllowedTargets};
 use crate::validate_attr::parse_meta;
 use crate::{AttributeTemplate, ShouldEmit, diagnostics};
 
@@ -681,6 +681,9 @@ impl AttributeParser<'_> {
         if let AllowedTargets::ManuallyChecked = allowed_targets {
             return None;
         }
-        Some(allowed_targets.allowed_targets().contains(&target))
+        Some(match allowed_targets.is_allowed(target) {
+            AllowedResult::Allowed | AllowedResult::Warn => true,
+            AllowedResult::Error => false,
+        })
     }
 }

@@ -276,7 +276,7 @@ fn configure_and_expand(
     let is_proc_macro_crate = crate_types.contains(&CrateType::ProcMacro);
 
     if crate_types.len() > 1 {
-        if is_executable_crate {
+        if is_executable_crate && !crate_types.contains(&CrateType::Rlib) {
             sess.dcx().emit_err(diagnostics::MixedBinCrate);
         }
         if is_proc_macro_crate {
@@ -1435,7 +1435,7 @@ pub fn collect_crate_types(
             });
             return Vec::new();
         }
-        return vec![CrateType::Executable];
+        return vec![CrateType::Executable, CrateType::Rlib];
     }
 
     // Shadow `sdylib` crate type in interface build.

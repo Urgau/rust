@@ -1088,6 +1088,11 @@ impl<'ll, 'tcx> MiscCodegenMethods<'tcx> for CodegenCx<'ll, 'tcx> {
                 llvm::AttributePlace::Function,
                 attributes::target_features_attr(self, self.tcx, vec![]).as_slice(),
             );
+            // The rlib output must not export a strong `main`, or it would clash
+            // with the `main` of any executable that links against it.
+            if self.tcx.crate_types().contains(&CrateType::Rlib) {
+                llvm::set_linkage(llfn, llvm::Linkage::WeakAnyLinkage);
+            }
             Some(llfn)
         } else {
             // If the symbol already exists, it is an error: for example, the user wrote

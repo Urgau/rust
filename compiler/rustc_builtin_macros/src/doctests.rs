@@ -1,6 +1,6 @@
 // Code that generates a test runner to run all the tests in a crate
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::{iter, mem};
 
 use rustc_ast::mut_visit::*;
@@ -11,6 +11,7 @@ use rustc_expand::base::{ExtCtxt, ResolverExpand};
 use rustc_expand::expand::{AstFragment, ExpansionConfig};
 use rustc_feature::Features;
 use rustc_session::Session;
+use rustc_span::edition::Edition;
 use rustc_span::hygiene::{AstPass, Transparency};
 use rustc_span::source_map::SourceMap;
 use rustc_span::{DUMMY_SP, Ident, RemapPathScopeComponents, Span, Symbol, SyntaxContext, kw, sym};
@@ -357,7 +358,6 @@ fn mk_unit_test(
             };
 
             let source = builder.generate_unique_doctest(Some(exp.crate_name.as_str()));
-            debug!(?source);
 
             let rustc = cx
                 .sess
@@ -366,13 +366,18 @@ fn mk_unit_test(
                 .path()
                 .join("bin")
                 .join(format!("rustc{}", std::env::consts::EXE_SUFFIX));
+            let rustc_args = doctest_rustc_args(
+                &cx.sess,
+                exp.crate_name,
+                collected_doctest.config.edition.unwrap_or(item_span.edition()),
+            );
             let body = mk_rustc_doctest_body(
                 cx,
                 entrypoint_sp,
                 &rustc,
-                &[],
+                &rustc_args,
                 &source,
-                "",
+                doctest_name.as_str(),
                 collected_doctest.config.compile_fail,
             );
 
@@ -805,4 +810,78 @@ fn get_location_info(cx: &ExtCtxt<'_>, span: Span) -> (Symbol, usize, usize, usi
     };
 
     (Symbol::intern(&file_name), lo_line, lo_col, hi_line, hi_col)
+}
+
+fn doctest_rustc_args(sess: &Session, crate_name: Symbol, edition: Edition) -> Vec<String> {
+    use rustc_session::config::ExternLocation;
+    use rustc_session::search_paths::PathKind;
+
+    let opts = &sess.opts;
+    let mut args = vec![
+        format!("--edition={edition}"), // doctest attr (`edition2018`) wins over the crate's edition
+        "--crate-type=bin".into(),
+        "--crate-name=doctest".into(),
+        // the parent may run with a sysroot different from the one its binary lives in (bootstrap)
+        format!("--sysroot={}", opts.sysroot.path().display()),
+    ];
+
+    // -L
+    for sp in &opts.search_paths {
+        let kind = match sp.kind {
+            PathKind::Native => "native",
+            PathKind::Crate => "crate",
+            PathKind::Dependency => "dependency",
+            PathKind::Framework => "framework",
+            PathKind::All => "all",
+        };
+        args.push(format!("-L{kind}={}", sp.dir.display()));
+    }
+
+    // --extern
+    for (name, entry) in opts.externs.iter() {
+        match &entry.location {
+            ExternLocation::ExactPaths(paths) => {
+                for p in paths {
+                    args.push(format!("--extern={name}={}", p.canonicalized().display()));
+                }
+            }
+            ExternLocation::FoundInLibrarySearchDirectories => {
+                args.push(format!("--extern={name}"))
+            }
+        }
+    }
+
+    // The crate under test, so `use my_crate::...` works in the doctest.
+    if let Some(rlib) = own_rlib_path(sess, crate_name) {
+        args.push(format!("--extern={crate_name}={}", rlib.display()));
+    }
+
+    // -C: allow-list only
+    if let Some(l) = &opts.cg.linker {
+        args.push(format!("-Clinker={}", l.display()));
+    }
+    for a in &opts.cg.link_args {
+        args.push(format!("-Clink-arg={a}"));
+    }
+    if let Some(c) = &opts.cg.target_cpu {
+        args.push(format!("-Ctarget-cpu={c}"));
+    }
+    if !opts.cg.target_feature.is_empty() {
+        args.push(format!("-Ctarget-feature={}", opts.cg.target_feature));
+    }
+
+    args
+}
+
+fn own_rlib_path(sess: &Session, crate_name: Symbol) -> Option<PathBuf> {
+    use rustc_session::config::OutFileName;
+
+    let dir = match (&sess.io.output_dir, &sess.io.output_file) {
+        (Some(dir), _) => dir.clone(),
+        (None, Some(OutFileName::Real(f))) => f.parent()?.to_path_buf(),
+        _ => PathBuf::new(), // cwd
+    };
+    let file = format!("lib{crate_name}{}.rlib", sess.opts.cg.extra_filename);
+    // The tests run from a different cwd than this rustc, so the path must be absolute.
+    std::path::absolute(dir.join(file)).ok()
 }

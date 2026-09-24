@@ -14,15 +14,15 @@ use crate::doctests::parsing::CodeLineMapping;
 
 #[derive(Default, Debug)]
 pub(super) struct ParseSourceInfo {
-    pub(super) stmts: ThinVec<Stmt>,
     pub(super) has_main_fn: bool,
     pub(super) already_has_extern_crate: bool,
-    //pub(super) supports_color: bool,
-    pub(super) has_global_allocator: bool,
-    pub(super) has_macro_def: bool,
-    pub(super) everything_else: String,
-    pub(super) crates: String,
+
     pub(super) attrs: ast::AttrVec,
+    pub(super) stmts: ThinVec<Stmt>,
+
+    pub(super) crates: String,
+    pub(super) str_attrs: String,
+    pub(super) everything_else: String,
 }
 
 const DOCTEST_CODE_WRAPPER: &str = "fn f(){\n";
@@ -77,11 +77,6 @@ pub(super) fn parse_source(
         crate_name: &Option<Symbol>,
     ) -> bool {
         let mut is_extern_crate = false;
-        if !info.has_global_allocator
-            && item.attrs.iter().any(|attr| attr.has_name(sym::global_allocator))
-        {
-            info.has_global_allocator = true;
-        }
         match item.kind {
             ast::ItemKind::Fn(ref fn_item) if !info.has_main_fn => {
                 if fn_item.ident.name == sym::main {
@@ -98,9 +93,6 @@ pub(super) fn parse_source(
                         None => ident.name == *crate_name,
                     };
                 }
-            }
-            ast::ItemKind::MacroDef(..) => {
-                info.has_macro_def = true;
             }
             _ => {}
         }
@@ -119,6 +111,9 @@ pub(super) fn parse_source(
             kind: ast::ItemKind::Fn(ast::Fn { body: Some(body), .. }),
             ..
         })) => {
+            for attr in &attrs {
+                push_to_s(&mut info.str_attrs, source, attr.span, &mut prev_span_hi);
+            }
             info.attrs = attrs;
             let mut has_non_items = false;
             let mut first_non_item_span = None;

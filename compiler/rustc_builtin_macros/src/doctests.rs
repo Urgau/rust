@@ -1,10 +1,10 @@
 // Code that generates a test runner to run all the tests in a crate
 
+use std::path::Path;
 use std::{iter, mem};
 
-use rustc_ast as ast;
 use rustc_ast::mut_visit::*;
-use rustc_ast::{ModKind, NodeId, join_path_idents};
+use rustc_ast::{self as ast, BinOpKind, ModKind, NodeId, UnOp, join_path_idents, token};
 use rustc_attr_ir::target::Target;
 use rustc_attr_parsing::AttributeParser;
 use rustc_expand::base::{ExtCtxt, ResolverExpand};
@@ -358,6 +358,39 @@ fn mk_unit_test(
 
             let source = builder.generate_unique_doctest(Some(exp.crate_name.as_str()));
             debug!(?source);
+
+            let rustc = cx
+                .sess
+                .opts
+                .sysroot
+                .path()
+                .join("bin")
+                .join(format!("rustc{}", std::env::consts::EXE_SUFFIX));
+            let body = mk_rustc_doctest_body(
+                cx,
+                entrypoint_sp,
+                &rustc,
+                &[],
+                &source,
+                "",
+                collected_doctest.config.compile_fail,
+            );
+
+            let entrypoint = cx.item(
+                entrypoint_sp,
+                ast::AttrVec::new(),
+                ast::ItemKind::Fn(Box::new(ast::Fn {
+                    defaultness: ast::Defaultness::Implicit,
+                    ident: entrypoint_ident,
+                    generics: ast::Generics::default(),
+                    contract: None,
+                    define_opaque: None,
+                    eii_impl: None,
+                    sig,
+                    body: Some(body),
+                })),
+            );
+            doctest_mod_items.push(entrypoint);
         }
     }
 
@@ -594,6 +627,168 @@ fn mk_unit_test(
 
         thin_vec![mod_]
     }
+}
+
+/// Builds the *body* of a doctest unit test:
+/// compile `source` with `rustc` (source on stdin), then run the binary,
+/// or, for `compile_fail`, check that compilation fails.
+///
+/// - `rustc_args`: flags for the child rustc, WITHOUT `-o <out>` and WITHOUT the trailing `-`
+/// - `out_stem`: file stem for the produced binary (unique per test, no dots)
+pub(crate) fn mk_rustc_doctest_body(
+    ecx: &ExtCtxt<'_>,
+    sp: Span,
+    rustc: &Path,
+    rustc_args: &[String],
+    source: &str,
+    out_stem: &str,
+    compile_fail: bool,
+) -> Box<ast::Block> {
+    const OUT: &str = "__doctest_out";
+    const CHILD: &str = "__doctest_child";
+    const COMPILE: &str = "__doctest_compile";
+    const RUN: &str = "__doctest_run";
+    const MSG: &str = "__doctest_msg";
+
+    // Locals must all use the same syntax context, so they all go through `ident`.
+    let ident = |s: &str| Ident::new(Symbol::intern(s), sp);
+    let local = |s: &str| ecx.expr_ident(sp, ident(s));
+    let str_lit = |s: &str| ecx.expr_str(sp, Symbol::intern(s)); // handles escaping
+    let field = |base: &str, f: &str| ecx.expr(sp, ast::ExprKind::Field(local(base), ident(f)));
+    let semi = |e: Box<ast::Expr>| ast::Stmt {
+        id: ast::DUMMY_NODE_ID,
+        kind: ast::StmtKind::Semi(e),
+        span: sp,
+    };
+    // `::a::b::c(args)`; path segments use dummy spans, like `ExtCtxt::std_path` does
+    let gpath = |segs: &[&str]| -> Vec<Ident> {
+        segs.iter().map(|s| Ident::with_dummy_span(Symbol::intern(s))).collect()
+    };
+    let call =
+        |segs: &[&str], args: ThinVec<Box<ast::Expr>>| ecx.expr_call_global(sp, gpath(segs), args);
+    let method = |recv: Box<ast::Expr>, name: &str, args: ThinVec<Box<ast::Expr>>| {
+        ecx.expr_method_call(sp, recv, ident(name), args)
+    };
+    let not = |e| ecx.expr(sp, ast::ExprKind::Unary(UnOp::Not, e));
+    let mut_ref =
+        |e| ecx.expr(sp, ast::ExprKind::AddrOf(ast::BorrowKind::Ref, ast::Mutability::Mut, e));
+
+    // { let mut msg = prefix.to_owned(); msg.push_str(&String::from_utf8_lossy(&bytes));
+    //   ::std::panic::panic_any(msg); }
+    let fail = |prefix: &str, bytes: Box<ast::Expr>| -> Box<ast::Expr> {
+        let to_owned = call(&["std", "borrow", "ToOwned", "to_owned"], thin_vec![str_lit(prefix)]);
+        let lossy = call(
+            &["std", "string", "String", "from_utf8_lossy"],
+            thin_vec![ecx.expr_addr_of(sp, bytes)],
+        );
+        let stmts = thin_vec![
+            ecx.stmt_let(sp, true, ident(MSG), to_owned),
+            semi(method(local(MSG), "push_str", thin_vec![ecx.expr_addr_of(sp, lossy)])),
+            semi(call(&["std", "panic", "panic_any"], thin_vec![local(MSG)])),
+        ];
+        ecx.expr_block(ecx.block(sp, stmts))
+    };
+    // let _ = ::std::fs::remove_file(&out);
+    let remove_out = || {
+        ecx.stmt_let(
+            sp,
+            false,
+            ident("_doctest_removed"),
+            call(&["std", "fs", "remove_file"], thin_vec![ecx.expr_addr_of(sp, local(OUT))]),
+        )
+    };
+
+    let mut stmts: ThinVec<ast::Stmt> = ThinVec::new();
+
+    // let mut out = ::std::env::temp_dir(); out.push(stem); out.set_extension(EXE_EXTENSION);
+    stmts.push(ecx.stmt_let(sp, true, ident(OUT), call(&["std", "env", "temp_dir"], thin_vec![])));
+    stmts.push(semi(method(local(OUT), "push", thin_vec![str_lit(out_stem)])));
+    let exe_ext =
+        ecx.expr_path(ecx.path_global(sp, gpath(&["std", "env", "consts", "EXE_EXTENSION"])));
+    stmts.push(semi(method(local(OUT), "set_extension", thin_vec![exe_ext])));
+
+    // let mut child = Command::new(RUSTC).arg(..)...arg("-o").arg(&out).arg("-")
+    //     .stdin(piped()).stdout(piped()).stderr(piped()).spawn().expect(..);
+    let mut cmd =
+        call(&["std", "process", "Command", "new"], thin_vec![str_lit(&rustc.to_string_lossy())]);
+    for a in rustc_args {
+        cmd = method(cmd, "arg", thin_vec![str_lit(a)]);
+    }
+    cmd = method(cmd, "arg", thin_vec![str_lit("-o")]);
+    cmd = method(cmd, "arg", thin_vec![ecx.expr_addr_of(sp, local(OUT))]);
+    cmd = method(cmd, "arg", thin_vec![str_lit("-")]);
+    for stream in ["stdin", "stdout", "stderr"] {
+        let piped = call(&["std", "process", "Stdio", "piped"], thin_vec![]);
+        cmd = method(cmd, stream, thin_vec![piped]);
+    }
+    let spawn = method(
+        method(cmd, "spawn", thin_vec![]),
+        "expect",
+        thin_vec![str_lit("failed to spawn rustc")],
+    );
+    stmts.push(ecx.stmt_let(sp, true, ident(CHILD), spawn));
+
+    // ::std::io::Write::write_all(&mut child.stdin.take().expect(..), SRC.as_bytes()).expect(..);
+    // (the temporary ChildStdin is dropped at the end of the statement => EOF for rustc)
+    let stdin = method(field(CHILD, "stdin"), "take", thin_vec![]);
+    let stdin = method(stdin, "expect", thin_vec![str_lit("stdin was piped")]);
+    let bytes = method(str_lit(source), "as_bytes", thin_vec![]);
+    let write = call(&["std", "io", "Write", "write_all"], thin_vec![mut_ref(stdin), bytes]);
+    stmts.push(semi(method(
+        write,
+        "expect",
+        thin_vec![str_lit("failed to write the doctest to rustc's stdin")],
+    )));
+
+    // let compile = child.wait_with_output().expect(..);
+    let wait = method(local(CHILD), "wait_with_output", thin_vec![]);
+    stmts.push(ecx.stmt_let(
+        sp,
+        false,
+        ident(COMPILE),
+        method(wait, "expect", thin_vec![str_lit("failed to wait on rustc")]),
+    ));
+
+    if compile_fail {
+        stmts.push(remove_out()); // in case it unexpectedly compiled
+        // if compile.status.code() != Some(1) { fail } -- 1 = ordinary compile errors,
+        // 101 = ICE, None = killed by a signal: none of those is a legit compile_fail
+        let code = method(field(COMPILE, "status"), "code", thin_vec![]);
+        let one = ecx
+            .expr(sp, ast::ExprKind::Lit(token::Lit::new(token::Integer, sym::integer(1), None)));
+        let some_one = call(&["std", "option", "Option", "Some"], thin_vec![one]);
+        let cond = ecx.expr_binary(sp, BinOpKind::Ne, code, some_one);
+        let fail = fail(
+            "compile_fail doctest: rustc did not fail with a normal compile error:\n",
+            field(COMPILE, "stderr"),
+        );
+        stmts.push(ecx.stmt_expr(ecx.expr_if(sp, cond, fail, None)));
+    } else {
+        // if !compile.status.success() { fail }
+        let ok = method(field(COMPILE, "status"), "success", thin_vec![]);
+        let fail_c = fail("rustc failed to compile the doctest:\n", field(COMPILE, "stderr"));
+        stmts.push(ecx.stmt_expr(ecx.expr_if(sp, not(ok), fail_c, None)));
+
+        // let run = Command::new(&out).output().expect(..); let _ = remove_file(&out);
+        let run = call(
+            &["std", "process", "Command", "new"],
+            thin_vec![ecx.expr_addr_of(sp, local(OUT))],
+        );
+        let run = method(
+            method(run, "output", thin_vec![]),
+            "expect",
+            thin_vec![str_lit("failed to run the doctest binary")],
+        );
+        stmts.push(ecx.stmt_let(sp, false, ident(RUN), run));
+        stmts.push(remove_out());
+
+        // if !run.status.success() { fail }
+        let ok = method(field(RUN, "status"), "success", thin_vec![]);
+        let fail_r = fail("the doctest binary failed:\n", field(RUN, "stderr"));
+        stmts.push(ecx.stmt_expr(ecx.expr_if(sp, not(ok), fail_r, None)));
+    }
+
+    ecx.block(sp, stmts)
 }
 
 fn item_path(mod_path: &[Ident], item_ident: &Ident) -> String {

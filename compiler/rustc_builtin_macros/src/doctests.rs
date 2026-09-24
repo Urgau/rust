@@ -19,6 +19,7 @@ use tracing::debug;
 
 use crate::doctests::source::ParseSourceInfo;
 
+mod make;
 mod parsing;
 mod source;
 
@@ -59,6 +60,13 @@ struct CollectedDocTest {
     config: parsing::LangString,
     rel_line: parsing::MdRelLine,
     code_mappings: Vec<parsing::CodeLineMapping>,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum ExpandMode {
+    DefSite,
+    CrateRoot,
+    StandaloneCrate,
 }
 
 impl<'a> MutVisitor for DocTestsExpander<'a> {
@@ -132,7 +140,7 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
 
         for collected_doctest in collector.tests.into_iter().filter(|d| {
             // don't take into account non-Rust doctests, as well as compile_fail and standalone ones
-            d.config.rust && !d.config.compile_fail /* && !d.config.standalone_crate*/
+            d.config.rust /*&& !d.config.compile_fail && !d.config.standalone_crate*/
         }) {
             let expn_id = self.ext_cx.resolver.expansion_for_ast_pass(
                 item.span,
@@ -155,14 +163,6 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
             ) else {
                 continue;
             };
-
-            let has_incompatible_fn_attrs = parse_info.attrs.iter().any(|attr| {
-                AttributeParser::is_maybe_allowed_at_level(attr, Target::Fn) != Some(true)
-                    && ![sym::allow, sym::deny, sym::warn, sym::forbid].contains(&attr.path()[0])
-            });
-            if has_incompatible_fn_attrs {
-                continue;
-            }
 
             let name = if let Some(ident) = &item_ident {
                 if has_more_than_one {
@@ -192,8 +192,21 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
                 span_adjustor.visit_attribute(attr);
             }
 
-            // HACK: we use standalone_crate to mean that it's a private doctest, change it before shipping it
-            let expand_at_site = !collected_doctest.config.standalone_crate;
+            let has_incompatible_fn_attrs = parse_info.attrs.iter().any(|attr| {
+                AttributeParser::is_maybe_allowed_at_level(attr, Target::Fn) != Some(true)
+                    && ![sym::allow, sym::deny, sym::warn, sym::forbid].contains(&attr.path()[0])
+            });
+
+            let expand_mode = if collected_doctest.config.compile_fail
+                || collected_doctest.config.standalone_crate
+                || has_incompatible_fn_attrs
+            {
+                ExpandMode::StandaloneCrate
+            } else if collected_doctest.config.unknown.contains(&"private".to_string()) {
+                ExpandMode::DefSite
+            } else {
+                ExpandMode::CrateRoot
+            };
 
             let items = mk_unit_test(
                 self,
@@ -201,21 +214,24 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
                 parse_info,
                 item.span,
                 name,
-                expand_at_site,
+                expand_mode,
                 syntax_context,
             );
             let items = AstFragment::Items(items.into_iter().collect());
 
-            if expand_at_site {
-                let prev = mem::replace(&mut self.ext_cx.current_expansion.id, expn_id);
-                let items =
-                    self.ext_cx.monotonic_expander().fully_expand_fragment(items).make_items();
-                self.ext_cx.current_expansion.id = prev;
-                self.expanded_doctests.extend(items);
-            } else {
-                let items =
-                    self.ext_cx.monotonic_expander().fully_expand_fragment(items).make_items();
-                self.expanded_doctests_crate.extend(items);
+            match expand_mode {
+                ExpandMode::DefSite => {
+                    let prev = mem::replace(&mut self.ext_cx.current_expansion.id, expn_id);
+                    let items =
+                        self.ext_cx.monotonic_expander().fully_expand_fragment(items).make_items();
+                    self.ext_cx.current_expansion.id = prev;
+                    self.expanded_doctests.extend(items);
+                }
+                ExpandMode::CrateRoot | ExpandMode::StandaloneCrate => {
+                    let items =
+                        self.ext_cx.monotonic_expander().fully_expand_fragment(items).make_items();
+                    self.expanded_doctests_crate.extend(items);
+                }
             }
         }
 
@@ -253,14 +269,14 @@ fn mk_unit_test(
     parse_info: ParseSourceInfo,
     item_span: Span,
     doctest_name: Symbol,
-    expand_at_side: bool,
+    expand_mode: ExpandMode,
     syntax_context_inside_the_generated_code: SyntaxContext,
 ) -> ThinVec<Box<ast::Item>> {
     let cx = &mut exp.ext_cx;
 
     let mut doctest_mod_items = ThinVec::new();
 
-    if !parse_info.already_has_extern_crate && !expand_at_side {
+    if !parse_info.already_has_extern_crate && expand_mode != ExpandMode::StandaloneCrate {
         let extern_crate_self = cx.item(
             item_span,
             ast::AttrVec::new(),
@@ -274,11 +290,6 @@ fn mk_unit_test(
         );
 
         doctest_mod_items.push(extern_crate_self);
-    }
-
-    let mut attrs = parse_info.attrs;
-    for attr in &mut attrs {
-        attr.style = rustc_ast::AttrStyle::Inner;
     }
 
     let doctest_expn_id = cx.resolver.expansion_for_ast_pass(
@@ -296,34 +307,59 @@ fn mk_unit_test(
     let decl = cx.fn_decl(ThinVec::new(), ast::FnRetTy::Ty(ret_ty));
     let sig = ast::FnSig { decl, header: ast::FnHeader::default(), span: entrypoint_sp };
 
-    let mut stmts = parse_info.stmts;
-    if parse_info.has_main_fn {
-        let main_ident =
-            Ident::new(sym::main, item_span.with_ctxt(syntax_context_inside_the_generated_code));
-
-        // creates main()
-        let call = cx.expr_call_ident(entrypoint_sp, main_ident, ThinVec::new());
-        stmts.push(cx.stmt_expr(call));
-    }
-
-    // creates fn <name>_doctest() -> () { ... }
     let entrypoint_ident = Ident::new(doctest_name, entrypoint_sp);
-    let entrypoint = cx.item(
-        entrypoint_sp,
-        attrs,
-        ast::ItemKind::Fn(Box::new(ast::Fn {
-            defaultness: ast::Defaultness::Implicit,
-            ident: entrypoint_ident,
-            generics: ast::Generics::default(),
-            contract: None,
-            define_opaque: None,
-            eii_impl: None,
-            sig,
-            body: Some(cx.block(entrypoint_sp, stmts)),
-        })),
-    );
 
-    doctest_mod_items.push(entrypoint);
+    match expand_mode {
+        ExpandMode::DefSite | ExpandMode::CrateRoot => {
+            let mut attrs = parse_info.attrs;
+            for attr in &mut attrs {
+                attr.style = rustc_ast::AttrStyle::Inner;
+            }
+
+            let mut stmts = parse_info.stmts;
+            if parse_info.has_main_fn {
+                let main_ident = Ident::new(
+                    sym::main,
+                    item_span.with_ctxt(syntax_context_inside_the_generated_code),
+                );
+
+                // creates main()
+                let call = cx.expr_call_ident(entrypoint_sp, main_ident, ThinVec::new());
+                stmts.push(cx.stmt_expr(call));
+            }
+
+            // creates fn <entrypoint>() -> () { ... }
+            let entrypoint = cx.item(
+                entrypoint_sp,
+                attrs,
+                ast::ItemKind::Fn(Box::new(ast::Fn {
+                    defaultness: ast::Defaultness::Implicit,
+                    ident: entrypoint_ident,
+                    generics: ast::Generics::default(),
+                    contract: None,
+                    define_opaque: None,
+                    eii_impl: None,
+                    sig,
+                    body: Some(cx.block(entrypoint_sp, stmts)),
+                })),
+            );
+            doctest_mod_items.push(entrypoint);
+        }
+        ExpandMode::StandaloneCrate => {
+            let builder = make::DocTestBuilder {
+                already_has_extern_crate: parse_info.already_has_extern_crate,
+                has_main_fn: parse_info.has_main_fn,
+                global_crate_attrs: Vec::new(), // todo
+                attrs: parse_info.str_attrs,
+                crates: parse_info.crates,
+                everything_else: parse_info.everything_else,
+                test_id: None,
+            };
+
+            let source = builder.generate_unique_doctest(Some(exp.crate_name.as_str()));
+            debug!(?source);
+        }
+    }
 
     let expn_id = cx.resolver.expansion_for_ast_pass(
         DUMMY_SP,
@@ -539,7 +575,7 @@ fn mk_unit_test(
     // The generated test case
     doctest_mod_items.push(test_const);
 
-    if expand_at_side {
+    if expand_mode == ExpandMode::DefSite {
         doctest_mod_items
     } else {
         let mod_ = cx.item(

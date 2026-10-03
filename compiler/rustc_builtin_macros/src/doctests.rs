@@ -33,6 +33,10 @@ pub fn expand_doctests(
     features: &Features,
     resolver: &mut dyn ResolverExpand,
 ) {
+    if !sess.opts.test {
+        return;
+    }
+
     let econfig = ExpansionConfig::default(sym::test, features);
     let ext_cx = ExtCtxt::new(sess, econfig, resolver, None);
 

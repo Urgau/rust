@@ -471,8 +471,9 @@ fn mk_unit_test(
         thin_vec![
             // #[coverage(off)]
             // || {
-            coverage_off(cx.lambda0(
+            coverage_off(cx.closure(
                 sp,
+                vec![],
                 // test::assert_test_result(
                 cx.expr_call(
                     sp,
@@ -516,7 +517,6 @@ fn mk_unit_test(
                 generics: ast::Generics::default(),
                 ty: cx.ty(sp, ast::TyKind::Path(None, test_path("TestDescAndFn"))),
                 define_opaque: None,
-                kind: ast::ConstItemKind::Body,
                 // test::TestDescAndFn {
                 body: Some(
                     cx.expr_struct(

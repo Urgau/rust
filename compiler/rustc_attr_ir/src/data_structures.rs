@@ -1295,6 +1295,9 @@ pub enum AttributeKind {
     /// Represents `#[rustc_intrinsic_const_stable_indirect]`
     RustcIntrinsicConstStableIndirect,
 
+    /// Represents `#[rustc_isolated_paths]`
+    RustcIsolatedPaths,
+
     /// Represents `#[rustc_legacy_const_generics]`
     RustcLegacyConstGenerics {
         fn_indexes: ThinVec<(usize, Span)>,

@@ -1879,4 +1879,179 @@ fn check_private_in_public(tcx: TyCtxt<'_>, mod_id: LocalModId) {
     let crate_items = tcx.hir_module_items(mod_id);
     let _ = crate_items.par_items(|id| Ok(checker.check_item(id)));
     let _ = crate_items.par_foreign_items(|id| Ok(checker.check_foreign_item(id)));
+
+    if find_attr!(tcx, mod_id, RustcIsolatedPaths) {
+        let mut checker = IsolationChecker {
+            tcx,
+            effective_visibilities,
+            root: mod_id.to_def_id(),
+            maybe_typeck_results: None,
+        };
+
+        for id in crate_items.free_items() {
+            checker.visit_item(tcx.hir_item(id));
+        }
+
+        /*let _ = crate_items.par_items(|id| {
+            let mut checker = IsolationChecker {
+                tcx,
+                effective_visibilities,
+                root: mod_id.to_def_id(),
+                maybe_typeck_results: None,
+            };
+
+            Ok(checker.visit_item(id))
+        });*/
+        //let _ = crate_items.par_foreign_items(|id| Ok(checker.visit_foreign_item(id)));
+    }
+}
+
+struct IsolationChecker<'a, 'tcx> {
+    tcx: TyCtxt<'tcx>,
+    root: DefId,
+    maybe_typeck_results: Option<&'tcx ty::TypeckResults<'tcx>>,
+    effective_visibilities: &'a EffectiveVisibilities,
+}
+
+impl<'a, 'tcx> IsolationChecker<'a, 'tcx> {
+    fn typeck_results(&self) -> &'tcx ty::TypeckResults<'tcx> {
+        self.maybe_typeck_results
+            .expect("`IsolationChecker::typeck_results` called outside of a body")
+    }
+
+    fn inside(&self, def_id: DefId) -> bool {
+        self.tcx.is_descendant_of(def_id, self.root)
+    }
+
+    fn is_reachable(&self, def_id: DefId) -> bool {
+        let Some(local) = def_id.as_local() else { return true }; // other crates: ordinary rules
+        match self.tcx.def_kind(def_id) {
+            // ctors and fields: declared public, and what they hang off must be reachable
+            DefKind::Ctor(..) | DefKind::Field => {
+                self.tcx.visibility(def_id).is_public()
+                    && self.is_reachable(self.tcx.parent(def_id))
+            }
+            // assoc items hang off impls, which aren't nameable: the type's own path decides
+            DefKind::AssocFn | DefKind::AssocConst | DefKind::AssocTy => {
+                self.tcx.visibility(def_id).is_public()
+            }
+            _ => self.effective_visibilities.is_exported(local),
+        }
+    }
+
+    fn check_def(&self, def_id: DefId, span: Span) {
+        if self.inside(def_id) || self.is_reachable(def_id) {
+            return;
+        }
+        let kind = self.tcx.def_descr(def_id);
+        let descr = self.tcx.def_path_str(def_id);
+        self.tcx
+            .dcx()
+            .struct_span_err(span, format!("{kind} `{descr}` is not reachable from another crate"))
+            .with_span_label(span, "cannot be used from here")
+            .emit();
+    }
+}
+
+impl<'tcx> Visitor<'tcx> for IsolationChecker<'_, 'tcx> {
+    type NestedFilter = rustc_middle::hir::nested_filter::OnlyBodies;
+
+    fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+        self.tcx
+    }
+
+    fn visit_nested_body(&mut self, body_id: hir::BodyId) {
+        let new_typeck_results = self.tcx.typeck_body(body_id);
+        if new_typeck_results.tainted_by_errors.is_some() {
+            return;
+        }
+        let old = std::mem::replace(&mut self.maybe_typeck_results, Some(new_typeck_results));
+        self.visit_body(self.tcx.hir_body(body_id));
+        self.maybe_typeck_results = old;
+    }
+
+    fn visit_path(&mut self, path: &hir::Path<'tcx>, _id: hir::HirId) {
+        if let Res::Def(_, def_id) = path.res {
+            self.check_def(def_id, path.span);
+        }
+        intravisit::walk_path(self, path);
+    }
+
+    // TODO: check use
+    /*fn visit_use(&mut self, path: &hir::UsePath<'tcx>, _id: hir::HirId, _def_id: LocalDefId) {
+        for res in path.res.present_items() {
+            // one Res per namespace
+            if let Res::Def(_, def_id) = res {
+                self.check_def(def_id, path.span);
+            }
+        }
+    }*/
+
+    fn visit_expr(&mut self, expr: &'tcx hir::Expr<'tcx>) {
+        if self.maybe_typeck_results.is_some() {
+            let tr = self.typeck_results();
+            match expr.kind {
+                // `s.m()`
+                hir::ExprKind::MethodCall(segment, ..) => {
+                    if let Some(did) = tr.type_dependent_def_id(expr.hir_id) {
+                        self.check_def(did, segment.ident.span);
+                    }
+                }
+                // `S::assoc()` / `<S>::CONST`
+                hir::ExprKind::Path(hir::QPath::TypeRelative(_, segment)) => {
+                    if let Some((_, did)) = tr.type_dependent_def(expr.hir_id) {
+                        self.check_def(did, segment.ident.span);
+                    }
+                }
+                // `s.x`
+                hir::ExprKind::Field(base, ident) => {
+                    if let ty::Adt(adt, _) = tr.expr_ty_adjusted(base).kind() {
+                        let idx = tr.field_index(expr.hir_id);
+                        self.check_def(adt.non_enum_variant().fields[idx].did, ident.span);
+                    }
+                }
+                // `S { x: 1 }` and `S { x: 1, ..base }`
+                hir::ExprKind::Struct(qpath, fields, tail) => {
+                    let res = tr.qpath_res(qpath, expr.hir_id);
+                    if let Some(adt) = tr.expr_ty(expr).ty_adt_def() {
+                        let variant = adt.variant_of_res(res);
+                        let mut mentioned = FxHashSet::default();
+                        for f in fields {
+                            let idx = tr.field_index(f.hir_id);
+                            mentioned.insert(idx);
+                            self.check_def(variant.fields[idx].did, f.ident.span);
+                        }
+                        // functional update reads the fields that were not written
+                        if matches!(tail, hir::StructTailExpr::Base(_)) {
+                            for (idx, f) in variant.fields.iter_enumerated() {
+                                if !mentioned.contains(&idx) {
+                                    self.check_def(f.did, expr.span);
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        intravisit::walk_expr(self, expr);
+    }
+
+    fn visit_pat(&mut self, pat: &'tcx hir::Pat<'tcx>) {
+        if self.maybe_typeck_results.is_some() {
+            let tr = self.typeck_results();
+            // `S { x, .. }`; tuple-struct patterns are covered by the ctor's path
+            if let hir::PatKind::Struct(qpath, fields, _) = pat.kind {
+                let res = tr.qpath_res(&qpath, pat.hir_id);
+                if let Some(adt) = tr.pat_ty(pat).ty_adt_def() {
+                    let variant = adt.variant_of_res(res);
+                    for f in fields {
+                        let idx = tr.field_index(f.hir_id);
+                        self.check_def(variant.fields[idx].did, f.ident.span);
+                    }
+                }
+            }
+        }
+        intravisit::walk_pat(self, pat);
+    }
 }

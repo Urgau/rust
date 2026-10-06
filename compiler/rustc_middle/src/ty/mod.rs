@@ -2362,6 +2362,12 @@ impl<'tcx> rustc_attr_ir::HasAttrs<'tcx, TyCtxt<'tcx>> for LocalDefId {
     }
 }
 
+impl<'tcx> rustc_attr_ir::HasAttrs<'tcx, TyCtxt<'tcx>> for LocalModId {
+    fn get_attrs(self, tcx: &TyCtxt<'tcx>) -> &'tcx [rustc_attr_ir::Attribute] {
+        rustc_attr_ir::HasAttrs::get_attrs(self.to_local_def_id(), tcx)
+    }
+}
+
 impl<'tcx> rustc_attr_ir::HasAttrs<'tcx, TyCtxt<'tcx>> for hir::OwnerId {
     fn get_attrs(self, tcx: &TyCtxt<'tcx>) -> &'tcx [rustc_attr_ir::Attribute] {
         rustc_attr_ir::HasAttrs::get_attrs(self.def_id, tcx)

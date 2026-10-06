@@ -333,6 +333,7 @@ attribute_parsers!(
         Single<WithoutArgs<RustcInheritOverflowChecksParser>>,
         Single<WithoutArgs<RustcInsignificantDtorParser>>,
         Single<WithoutArgs<RustcIntrinsicConstStableIndirectParser>>,
+        Single<WithoutArgs<RustcIsolatedPathsParser>>,
         Single<WithoutArgs<RustcLintOptTyParser>>,
         Single<WithoutArgs<RustcLintQueryInstabilityParser>>,
         Single<WithoutArgs<RustcLintUntrackedQueryInformationParser>>,

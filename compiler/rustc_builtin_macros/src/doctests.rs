@@ -622,7 +622,7 @@ fn mk_unit_test(
     } else {
         let mod_ = cx.item(
             sp,
-            ast::AttrVec::new(),
+            thin_vec![cx.attr_word(sym::rustc_isolated_paths, attr_sp)],
             ast::ItemKind::Mod(
                 rustc_ast::Safety::Default,
                 Ident::new(sym::doctest, sp),

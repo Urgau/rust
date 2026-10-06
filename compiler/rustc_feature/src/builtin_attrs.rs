@@ -220,6 +220,7 @@ pub static BUILTIN_ATTRIBUTES: &[Symbol] = &[
     sym::rustc_insignificant_dtor,
     sym::rustc_intrinsic,
     sym::rustc_intrinsic_const_stable_indirect,
+    sym::rustc_isolated_paths,
     sym::rustc_legacy_const_generics,
     sym::rustc_lint_opt_deny_field_access,
     sym::rustc_lint_opt_ty,

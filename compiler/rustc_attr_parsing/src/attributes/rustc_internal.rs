@@ -1169,6 +1169,15 @@ impl NoArgsAttributeParser for RustcCanonicalSymbolParser {
     const CREATE: fn(Span) -> AttributeKind = |_| AttributeKind::RustcCanonicalSymbol;
 }
 
+pub(crate) struct RustcIsolatedPathsParser;
+
+impl NoArgsAttributeParser for RustcIsolatedPathsParser {
+    const PATH: &[Symbol] = &[sym::rustc_isolated_paths];
+    const ALLOWED_TARGETS: AllowedTargets<'_> = AllowedTargets::AllowList(&[Allow(Target::Mod)]);
+    const STABILITY: AttributeStability = unstable!(rustc_attrs);
+    const CREATE: fn(Span) -> AttributeKind = |_| AttributeKind::RustcIsolatedPaths;
+}
+
 pub(crate) struct RustcAssertVarianceParser;
 
 impl SingleAttributeParser for RustcAssertVarianceParser {

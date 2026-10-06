@@ -361,6 +361,7 @@ pub static BUILTIN_ATTRIBUTES: &[Symbol] = &[
     sym::rustc_has_incoherent_inherent_impls,
     sym::rustc_non_const_trait_method,
     sym::rustc_panics_when_zero,
+    sym::rustc_isolated_paths,
 
     sym::rustc_canonical_symbol,
     sym::rustc_diagnostic_item,

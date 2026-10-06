@@ -1881,28 +1881,20 @@ fn check_private_in_public(tcx: TyCtxt<'_>, mod_id: LocalModId) {
     let _ = crate_items.par_foreign_items(|id| Ok(checker.check_foreign_item(id)));
 
     if find_attr!(tcx, mod_id, RustcIsolatedPaths) {
-        let mut checker = IsolationChecker {
+        let checker = || IsolationChecker {
             tcx,
             effective_visibilities,
             root: mod_id.to_def_id(),
             maybe_typeck_results: None,
         };
 
-        for id in crate_items.free_items() {
-            checker.visit_item(tcx.hir_item(id));
-        }
-
-        /*let _ = crate_items.par_items(|id| {
-            let mut checker = IsolationChecker {
-                tcx,
-                effective_visibilities,
-                root: mod_id.to_def_id(),
-                maybe_typeck_results: None,
-            };
-
-            Ok(checker.visit_item(id))
-        });*/
-        //let _ = crate_items.par_foreign_items(|id| Ok(checker.visit_foreign_item(id)));
+        let _ = crate_items.par_items(|id| Ok(checker().visit_item(tcx.hir_item(id))));
+        let _ = crate_items
+            .par_trait_items(|id| Ok(checker().visit_trait_item(tcx.hir_trait_item(id))));
+        let _ =
+            crate_items.par_impl_items(|id| Ok(checker().visit_impl_item(tcx.hir_impl_item(id))));
+        let _ = crate_items
+            .par_foreign_items(|id| Ok(checker().visit_foreign_item(tcx.hir_foreign_item(id))));
     }
 }
 
@@ -1977,15 +1969,14 @@ impl<'tcx> Visitor<'tcx> for IsolationChecker<'_, 'tcx> {
         intravisit::walk_path(self, path);
     }
 
-    // TODO: check use
-    /*fn visit_use(&mut self, path: &hir::UsePath<'tcx>, _id: hir::HirId, _def_id: LocalDefId) {
-        for res in path.res.present_items() {
+    fn visit_use(&mut self, path: &hir::UseTree<'tcx>, _id: hir::HirId, _def_id: LocalDefId) {
+        for res in path.prefix.res.present_items() {
             // one Res per namespace
             if let Res::Def(_, def_id) = res {
-                self.check_def(def_id, path.span);
+                self.check_def(def_id, path.prefix.span);
             }
         }
-    }*/
+    }
 
     fn visit_expr(&mut self, expr: &'tcx hir::Expr<'tcx>) {
         if self.maybe_typeck_results.is_some() {

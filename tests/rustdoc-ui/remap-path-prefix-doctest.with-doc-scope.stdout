@@ -6,7 +6,7 @@ failures:
 
 ---- remapped_path/remap-path-prefix-doctest.rs - SomeStruct (line 19) stdout ----
 error: this file contains an unclosed delimiter
-  --> remapped_path/remap-path-prefix-doctest.rs:20:12
+  --> $DIR/remap-path-prefix-doctest.rs:20:12
    |
 LL | fn invalid(
    |           -^

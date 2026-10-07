@@ -1001,9 +1001,7 @@ impl ScrapedDocTest {
 
     fn path(&self) -> PathBuf {
         match &self.filename {
-            FileName::Real(name) => {
-                name.path(RemapPathScopeComponents::DOCUMENTATION).to_path_buf()
-            }
+            FileName::Real(name) => name.path(RemapPathScopeComponents::MACRO).to_path_buf(),
             _ => PathBuf::from(r"doctest.rs"),
         }
     }

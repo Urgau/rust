@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use std::{iter, mem};
 
 use rustc_ast::mut_visit::*;
-use rustc_ast::{self as ast, BinOpKind, ModKind, NodeId, UnOp, join_path_idents, token};
+use rustc_ast::{
+    self as ast, BinOpKind, CRATE_NODE_ID, ModKind, NodeId, UnOp, join_path_idents, token,
+};
 use rustc_attr_ir::target::Target;
 use rustc_attr_parsing::AttributeParser;
 use rustc_expand::base::{ExtCtxt, ResolverExpand};
@@ -152,7 +154,11 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
                 AstPass::DocTests,
                 Some(collected_doctest.config.edition.unwrap_or(item.span.edition())),
                 &[],
-                Some(self.parent_node_id),
+                Some(if collected_doctest.config.unknown.contains(&"private".to_string()) {
+                    self.parent_node_id
+                } else {
+                    CRATE_NODE_ID
+                }),
             );
             let syntax_context =
                 SyntaxContext::root().apply_mark(expn_id.to_expn_id(), Transparency::Opaque);
@@ -224,17 +230,14 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
             );
             let items = AstFragment::Items(items.into_iter().collect());
 
+            let prev = mem::replace(&mut self.ext_cx.current_expansion.id, expn_id);
+            let items = self.ext_cx.monotonic_expander().fully_expand_fragment(items).make_items();
+            self.ext_cx.current_expansion.id = prev;
             match expand_mode {
                 ExpandMode::DefSite => {
-                    let prev = mem::replace(&mut self.ext_cx.current_expansion.id, expn_id);
-                    let items =
-                        self.ext_cx.monotonic_expander().fully_expand_fragment(items).make_items();
-                    self.ext_cx.current_expansion.id = prev;
                     self.expanded_doctests.extend(items);
                 }
                 ExpandMode::CrateRoot | ExpandMode::StandaloneCrate => {
-                    let items =
-                        self.ext_cx.monotonic_expander().fully_expand_fragment(items).make_items();
                     self.expanded_doctests_crate.extend(items);
                 }
             }
@@ -302,6 +305,7 @@ fn mk_unit_test(
         AstPass::DocTests,
         None,
         &[],
+        // TODO: we may need to use a different node id for public/standalone doctests
         Some(exp.parent_node_id),
     );
 

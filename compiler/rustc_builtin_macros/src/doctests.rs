@@ -23,6 +23,7 @@ use tracing::debug;
 use crate::doctests::source::ParseSourceInfo;
 
 mod make;
+mod meta_item;
 mod parsing;
 mod source;
 
@@ -49,6 +50,7 @@ pub fn expand_doctests(
         expanded_doctests_crate: Vec::new(),
         mod_path: Vec::new(),
         parent_node_id: ast::CRATE_NODE_ID,
+        doc_test_attr_stack: Vec::with_capacity(1),
     }
     .visit_crate(krate);
 }
@@ -60,6 +62,7 @@ struct DocTestsExpander<'a> {
     expanded_doctests_crate: Vec<Box<ast::Item>>,
     mod_path: Vec<Ident>,
     parent_node_id: NodeId,
+    doc_test_attr_stack: Vec<ast::MetaItem>,
 }
 
 struct CollectedDocTest {
@@ -96,6 +99,28 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
         let mut doc_strs = String::new();
         for frag in &doc_fragments {
             rustc_ast::rustdoc::add_doc_fragment(&mut doc_strs, frag);
+        }
+
+        // Try collecting `#[doc(test(attr(...)))]`
+        let old_doc_test_attr_stack_len = self.doc_test_attr_stack.len();
+        for doc_test_attrs in item
+            .attrs
+            .iter()
+            .filter(|a| a.has_name(sym::doc))
+            .flat_map(|a| a.meta_item_list().unwrap_or_default())
+            .filter(|a| a.has_name(sym::test))
+        {
+            let Some(doc_test_attrs) = doc_test_attrs.meta_item_list() else { continue };
+            for meta in doc_test_attrs
+                .iter()
+                .filter(|a| a.has_name(sym::attr))
+                .flat_map(|a| a.meta_item_list().unwrap_or_default())
+            {
+                if let ast::MetaItemInner::MetaItem(meta) = meta {
+                    // Add the additional attributes to the global_crate_attrs vector
+                    self.doc_test_attr_stack.push(meta.clone());
+                }
+            }
         }
 
         struct DocTestsCollector {
@@ -268,6 +293,9 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
         // But in those cases, we emit a lint to warn the user of these missing tests.
         ast::visit::walk_item(&mut InnerItemLinter { sess: self.cx.ext_cx.sess }, item);
         }*/
+
+        // Restore global_crate_attrs to it's previous size/content
+        self.doc_test_attr_stack.truncate(old_doc_test_attr_stack_len);
     }
 }
 
@@ -323,6 +351,20 @@ fn mk_unit_test(
             let mut attrs = parse_info.attrs;
             for attr in &mut attrs {
                 attr.style = rustc_ast::AttrStyle::Inner;
+            }
+
+            for meta in &exp.doc_test_attr_stack {
+                let args = meta_item::meta_item_to_attr_args(meta);
+
+                attrs.push(cx.attr_nested(
+                    ast::AttrItem {
+                        unsafety: ast::Safety::Default,
+                        path: meta.path.clone(),
+                        args,
+                        span: meta.span,
+                    },
+                    entrypoint_sp,
+                ));
             }
 
             let mut stmts = parse_info.stmts;

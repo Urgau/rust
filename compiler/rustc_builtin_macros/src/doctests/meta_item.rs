@@ -1,13 +1,7 @@
-use rustc_ast::ast;
-use rustc_ast::token;
 use rustc_ast::token::Delimiter;
-use rustc_ast::tokenstream::DelimSpacing;
-use rustc_ast::tokenstream::DelimSpan;
-use rustc_ast::tokenstream::Spacing;
-use rustc_ast::tokenstream::TokenStream;
-use rustc_ast::tokenstream::TokenTree;
+use rustc_ast::tokenstream::{DelimSpacing, DelimSpan, Spacing, TokenStream, TokenTree};
+use rustc_ast::{ast, token};
 use rustc_span::Span;
-
 use thin_vec::ThinVec;
 
 fn meta_item_tokens(mi: &ast::MetaItem, out: &mut Vec<TokenTree>) {

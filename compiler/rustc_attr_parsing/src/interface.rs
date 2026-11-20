@@ -677,7 +677,22 @@ impl<'sess> AttributeParser<'sess> {
 
 impl AttributeParser<'_> {
     pub fn is_maybe_allowed_at_level(a: &ast::Attribute, target: Target) -> Option<bool> {
-        let allowed_targets = &ATTRIBUTE_PARSERS.accepters.get(&*a.path())?.allowed_targets;
+        fn attr_path(a: &ast::Attribute) -> Vec<Symbol> {
+            use rustc_ast::AttrKind;
+            use rustc_ast::SyntheticAttr::*;
+            match &a.kind {
+                AttrKind::Normal(normal) => {
+                    normal.item.path.segments.iter().map(|i| i.ident.name).collect()
+                }
+                AttrKind::Synthetic(CfgTrace(_)) => vec![sym::cfg],
+                AttrKind::Synthetic(CfgAttrTrace(_)) => vec![sym::cfg_attr],
+                AttrKind::Synthetic(TestEntrypoint) => vec![sym::test],
+                AttrKind::DocComment(_, _) => vec![sym::doc],
+                AttrKind::Generated(generated) => generated.path().iter().copied().collect(),
+            }
+        }
+
+        let allowed_targets = &ATTRIBUTE_PARSERS.accepters.get(&*attr_path(a))?.allowed_targets;
         if let AllowedTargets::ManuallyChecked = allowed_targets {
             return None;
         }

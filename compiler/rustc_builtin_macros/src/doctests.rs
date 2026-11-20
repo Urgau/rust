@@ -230,7 +230,6 @@ impl<'a> MutVisitor for DocTestsExpander<'a> {
 
             let has_incompatible_fn_attrs = parse_info.attrs.iter().any(|attr| {
                 AttributeParser::is_maybe_allowed_at_level(attr, Target::Fn) != Some(true)
-                    && ![sym::allow, sym::deny, sym::warn, sym::forbid].contains(&attr.path()[0])
             });
 
             let expand_mode = if collected_doctest.config.compile_fail
@@ -464,17 +463,13 @@ fn mk_unit_test(
     let test_ident = Ident::new(sym::test, attr_sp);
 
     // creates test::$name
-    let test_path = |name| cx.path(ret_ty_sp, vec![test_ident, Ident::from_str_and_span(name, sp)]);
+    let test_path = |name| cx.path(ret_ty_sp, &[test_ident, Ident::from_str_and_span(name, sp)]);
 
     // creates test::ShouldPanic::$name
     let should_panic_path = |name| {
         cx.path(
             sp,
-            vec![
-                test_ident,
-                Ident::from_str_and_span("ShouldPanic", sp),
-                Ident::from_str_and_span(name, sp),
-            ],
+            &[test_ident, Ident::new(sym::ShouldPanic, sp), Ident::from_str_and_span(name, sp)],
         )
     };
 
@@ -482,11 +477,7 @@ fn mk_unit_test(
     let test_type_path = |name| {
         cx.path(
             sp,
-            vec![
-                test_ident,
-                Ident::from_str_and_span("TestType", sp),
-                Ident::from_str_and_span(name, sp),
-            ],
+            &[test_ident, Ident::new(sym::TestType, sp), Ident::from_str_and_span(name, sp)],
         )
     };
 
@@ -494,11 +485,11 @@ fn mk_unit_test(
     let option_none_path = || {
         cx.path(
             sp,
-            vec![
-                Ident::from_str_and_span("core", sp),
-                Ident::from_str_and_span("option", sp),
-                Ident::from_str_and_span("Option", sp),
-                Ident::from_str_and_span("None", sp),
+            &[
+                Ident::new(sym::core, sp),
+                Ident::new(sym::option, sp),
+                Ident::new(sym::Option, sp),
+                Ident::new(sym::None, sp),
             ],
         )
     };
@@ -532,7 +523,7 @@ fn mk_unit_test(
                         // $test_fn()
                         cx.expr_call(
                             ret_ty_sp,
-                            cx.expr_path(cx.path(sp, vec![entrypoint_ident])),
+                            cx.expr_path(cx.path(sp, &[entrypoint_ident])),
                             ThinVec::new(),
                         ), // )
                     ],
@@ -706,7 +697,8 @@ pub(crate) fn mk_rustc_doctest_body(
     const MSG: &str = "__doctest_msg";
 
     // Locals must all use the same syntax context, so they all go through `ident`.
-    let ident = |s: &str| Ident::new(Symbol::intern(s), sp);
+    let symbol = |s: &str| Symbol::intern(s);
+    let ident = |s: &str| Ident::new(symbol(s), sp);
     let local = |s: &str| ecx.expr_ident(sp, ident(s));
     let str_lit = |s: &str| ecx.expr_str(sp, Symbol::intern(s)); // handles escaping
     let field = |base: &str, f: &str| ecx.expr(sp, ast::ExprKind::Field(local(base), ident(f)));
@@ -719,8 +711,9 @@ pub(crate) fn mk_rustc_doctest_body(
     let gpath = |segs: &[&str]| -> Vec<Ident> {
         segs.iter().map(|s| Ident::with_dummy_span(Symbol::intern(s))).collect()
     };
-    let call =
-        |segs: &[&str], args: ThinVec<Box<ast::Expr>>| ecx.expr_call_global(sp, gpath(segs), args);
+    let call = |segs: &[&str], args: ThinVec<Box<ast::Expr>>| {
+        ecx.expr_call_global(sp, ecx.path(sp, &gpath(segs)), args)
+    };
     let method = |recv: Box<ast::Expr>, name: &str, args: ThinVec<Box<ast::Expr>>| {
         ecx.expr_method_call(sp, recv, ident(name), args)
     };
@@ -734,11 +727,11 @@ pub(crate) fn mk_rustc_doctest_body(
         let to_owned = call(&["std", "borrow", "ToOwned", "to_owned"], thin_vec![str_lit(prefix)]);
         let lossy = call(
             &["std", "string", "String", "from_utf8_lossy"],
-            thin_vec![ecx.expr_addr_of(sp, bytes)],
+            thin_vec![ecx.expr_ref(sp, bytes)],
         );
         let stmts = thin_vec![
-            ecx.stmt_let(sp, true, ident(MSG), to_owned),
-            semi(method(local(MSG), "push_str", thin_vec![ecx.expr_addr_of(sp, lossy)])),
+            ecx.stmt_let(sp, true, symbol(MSG), to_owned),
+            semi(method(local(MSG), "push_str", thin_vec![ecx.expr_ref(sp, lossy)])),
             semi(call(&["std", "panic", "panic_any"], thin_vec![local(MSG)])),
         ];
         ecx.expr_block(ecx.block(sp, stmts))
@@ -748,18 +741,17 @@ pub(crate) fn mk_rustc_doctest_body(
         ecx.stmt_let(
             sp,
             false,
-            ident("_doctest_removed"),
-            call(&["std", "fs", "remove_file"], thin_vec![ecx.expr_addr_of(sp, local(OUT))]),
+            symbol("_doctest_removed"),
+            call(&["std", "fs", "remove_file"], thin_vec![ecx.expr_ref(sp, local(OUT))]),
         )
     };
 
     let mut stmts: ThinVec<ast::Stmt> = ThinVec::new();
 
     // let mut out = ::std::env::temp_dir(); out.push(stem); out.set_extension(EXE_EXTENSION);
-    stmts.push(ecx.stmt_let(sp, true, ident(OUT), call(&["std", "env", "temp_dir"], thin_vec![])));
+    stmts.push(ecx.stmt_let(sp, true, symbol(OUT), call(&["std", "env", "temp_dir"], thin_vec![])));
     stmts.push(semi(method(local(OUT), "push", thin_vec![str_lit(out_stem)])));
-    let exe_ext =
-        ecx.expr_path(ecx.path_global(sp, gpath(&["std", "env", "consts", "EXE_EXTENSION"])));
+    let exe_ext = ecx.expr_path(ecx.path(sp, &gpath(&["std", "env", "consts", "EXE_EXTENSION"])));
     stmts.push(semi(method(local(OUT), "set_extension", thin_vec![exe_ext])));
 
     // let mut child = Command::new(RUSTC).arg(..)...arg("-o").arg(&out).arg("-")
@@ -770,7 +762,7 @@ pub(crate) fn mk_rustc_doctest_body(
         cmd = method(cmd, "arg", thin_vec![str_lit(a)]);
     }
     cmd = method(cmd, "arg", thin_vec![str_lit("-o")]);
-    cmd = method(cmd, "arg", thin_vec![ecx.expr_addr_of(sp, local(OUT))]);
+    cmd = method(cmd, "arg", thin_vec![ecx.expr_ref(sp, local(OUT))]);
     cmd = method(cmd, "arg", thin_vec![str_lit("-")]);
     for stream in ["stdin", "stdout", "stderr"] {
         let piped = call(&["std", "process", "Stdio", "piped"], thin_vec![]);
@@ -781,7 +773,7 @@ pub(crate) fn mk_rustc_doctest_body(
         "expect",
         thin_vec![str_lit("failed to spawn rustc")],
     );
-    stmts.push(ecx.stmt_let(sp, true, ident(CHILD), spawn));
+    stmts.push(ecx.stmt_let(sp, true, symbol(CHILD), spawn));
 
     // ::std::io::Write::write_all(&mut child.stdin.take().expect(..), SRC.as_bytes()).expect(..);
     // (the temporary ChildStdin is dropped at the end of the statement => EOF for rustc)
@@ -800,7 +792,7 @@ pub(crate) fn mk_rustc_doctest_body(
     stmts.push(ecx.stmt_let(
         sp,
         false,
-        ident(COMPILE),
+        symbol(COMPILE),
         method(wait, "expect", thin_vec![str_lit("failed to wait on rustc")]),
     ));
 
@@ -825,16 +817,14 @@ pub(crate) fn mk_rustc_doctest_body(
         stmts.push(ecx.stmt_expr(ecx.expr_if(sp, not(ok), fail_c, None)));
 
         // let run = Command::new(&out).output().expect(..); let _ = remove_file(&out);
-        let run = call(
-            &["std", "process", "Command", "new"],
-            thin_vec![ecx.expr_addr_of(sp, local(OUT))],
-        );
+        let run =
+            call(&["std", "process", "Command", "new"], thin_vec![ecx.expr_ref(sp, local(OUT))]);
         let run = method(
             method(run, "output", thin_vec![]),
             "expect",
             thin_vec![str_lit("failed to run the doctest binary")],
         );
-        stmts.push(ecx.stmt_let(sp, false, ident(RUN), run));
+        stmts.push(ecx.stmt_let(sp, false, symbol(RUN), run));
         stmts.push(remove_out());
 
         // if !run.status.success() { fail }

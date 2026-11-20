@@ -8,7 +8,7 @@ use std::str::CharIndices;
 use pulldown_cmark::{
     self, BrokenLink, CodeBlockKind, CowStr, Event, LinkType, Options, Parser, Tag, TagEnd, html,
 };
-use rustc_ast::rustdoc::{DocFragment, source_span_for_markdown_range};
+use rustc_ast::rustdoc::{DocFragment, source_span_for_markdown_range_inner};
 use rustc_errors::{Diag, DiagMessage};
 //use rustc_hir::def_id::LocalDefId;
 //use rustc_middle::ty::TyCtxt;
@@ -185,8 +185,12 @@ fn map_code_block(
         {
             let code_line = (code_line_start + offset)..(code_line_start + mapped_line.len());
             if let Some(md_range) = markdown_range_for_code_range(text_events, code_line)
-                && let Some((original, _)) =
-                    source_span_for_markdown_range(extra_info.source_map, doc, &md_range, fragments)
+                && let Some((original, _)) = source_span_for_markdown_range_inner(
+                    extra_info.source_map,
+                    doc,
+                    &md_range,
+                    fragments,
+                )
             {
                 code_mappings.push(CodeLineMapping { generated, original });
             }

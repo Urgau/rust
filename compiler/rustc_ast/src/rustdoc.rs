@@ -1,4 +1,4 @@
-use std::range::Range;
+use std::ops::Range;
 
 use rustc_span::def_id::DefId;
 use rustc_span::source_map::SourceMap;
